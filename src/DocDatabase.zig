@@ -268,6 +268,32 @@ test "parse method with parent" {
     try std.testing.expectEqualStrings("Node2D", parent.name);
 }
 
+test "parse utility functions as global functions" {
+    var arena = ArenaAllocator.init(std.testing.allocator);
+    const allocator = arena.allocator();
+    defer arena.deinit();
+
+    const json_source =
+        \\{
+        \\  "utility_functions": [
+        \\    {
+        \\      "name": "sin"
+        \\    }
+        \\  ]
+        \\}
+    ;
+
+    var json_scanner = Scanner.initCompleteInput(allocator, json_source);
+    const db = try DocDatabase.loadFromJsonLeaky(allocator, &json_scanner);
+
+    const entry = db.symbols.get("sin");
+    try std.testing.expect(entry != null);
+    try std.testing.expectEqualStrings("sin", entry.?.name);
+    try std.testing.expectEqualStrings("sin", entry.?.full_path);
+    try std.testing.expectEqual(EntryKind.global_function, entry.?.kind);
+    try std.testing.expect(entry.?.parent_index == null); // No parent
+}
+
 const std = @import("std");
 const ArenaAllocator = std.heap.ArenaAllocator;
 const Allocator = std.mem.Allocator;
