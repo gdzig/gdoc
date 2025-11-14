@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Skill(superpowers:brainstorming)",
+      "mcp__plugin_beads_beads__set_context",
+      "Bash(zigdoc:*)",
+      "Bash(gh api:*)",
+      "mcp__plugin_beads_beads__create",
+      "mcp__plugin_beads_beads__dep",
+      "mcp__plugin_beads_beads__list",
+      "mcp__plugin_beads_beads__ready"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
