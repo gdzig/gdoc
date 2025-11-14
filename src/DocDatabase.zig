@@ -132,6 +132,30 @@ test "parse simple builtin class from JSON" {
     try std.testing.expectEqual(EntryKind.builtin_class, entry.?.kind);
 }
 
+test "parse regular class from JSON" {
+    var arena = ArenaAllocator.init(std.testing.allocator);
+    const allocator = arena.allocator();
+    defer arena.deinit();
+
+    const json_source =
+        \\{
+        \\  "classes": [
+        \\    {
+        \\      "name": "Node2D"
+        \\    }
+        \\  ]
+        \\}
+    ;
+
+    var json_scanner = Scanner.initCompleteInput(allocator, json_source);
+    const db = try DocDatabase.loadFromJsonLeaky(allocator, &json_scanner);
+
+    const entry = db.symbols.get("Node2D");
+    try std.testing.expect(entry != null);
+    try std.testing.expectEqualStrings("Node2D", entry.?.name);
+    try std.testing.expectEqual(EntryKind.class, entry.?.kind);
+}
+
 const std = @import("std");
 const ArenaAllocator = std.heap.ArenaAllocator;
 const Allocator = std.mem.Allocator;
