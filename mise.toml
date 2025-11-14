@@ -1,0 +1,5 @@
+[tools]
+zig = "0.15.1"
+zls = "0.15.0"
+"ubi:steveyegge/beads" = { version = "latest", exe = "bd" }
+godot = "latest"

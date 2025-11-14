@@ -1,0 +1,17 @@
+.{
+    .name = .gdoc,
+    .version = "0.0.0",
+    .fingerprint = 0xfeb534d08010a2a9,
+    .minimum_zig_version = "0.15.1",
+    .dependencies = .{
+        .bbcodez = .{
+            .url = "git+https://github.com/deevus/bbcodez.git#c289e0f3b6e0ebd0fba9e76a688775282feadb70",
+            .hash = "bbcodez-0.0.1-dev-YlrOBtiaAQBg3W_GpcPadnJpkfSw8MN3dT-emD79AWPS",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
