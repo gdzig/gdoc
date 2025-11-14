@@ -45,8 +45,8 @@ pub fn loadFromJsonLeaky(gpa: Allocator, scanner: *Scanner) !DocDatabase {
             .string => |s| {
                 std.debug.assert(scanner.string_is_object_key);
                 switch (std.meta.stringToEnum(RootState, s) orelse continue) {
-                    .builtin_classes => try parseBuiltinClasses(gpa, scanner, &db),
-                    .classes => try parseClasses(gpa, scanner, &db),
+                    .builtin_classes => try parseClasses(.builtin_class, gpa, scanner, &db),
+                    .classes => try parseClasses(.class, gpa, scanner, &db),
                     else => continue,
                 }
             },
@@ -58,15 +58,14 @@ pub fn loadFromJsonLeaky(gpa: Allocator, scanner: *Scanner) !DocDatabase {
     return db;
 }
 
-fn parseClasses(allocator: Allocator, scanner: *Scanner, db: *DocDatabase) !void {
+fn parseClasses(comptime kind: EntryKind, allocator: Allocator, scanner: *Scanner, db: *DocDatabase) !void {
     std.debug.assert(try scanner.next() == .array_begin);
 
     while (true) {
         const token = try scanner.next();
         switch (token) {
             .object_begin => {
-                const entry = try parseClass(allocator, scanner, .class);
-                try db.symbols.put(allocator, entry.name, entry);
+                try parseClass(allocator, scanner, kind, db);
             },
             .array_end => break,
             .end_of_document => unreachable,
@@ -75,25 +74,79 @@ fn parseClasses(allocator: Allocator, scanner: *Scanner, db: *DocDatabase) !void
     }
 }
 
-fn parseBuiltinClasses(allocator: Allocator, scanner: *Scanner, db: *DocDatabase) !void {
-    std.debug.assert(try scanner.next() == .array_begin);
+const ClassKey = enum {
+    name,
+    methods,
+};
 
-    while (true) {
-        const token = try scanner.next();
-        switch (token) {
-            .object_begin => {
-                const entry = try parseClass(allocator, scanner, .builtin_class);
-                try db.symbols.put(allocator, entry.name, entry);
-            },
-            .array_end => break,
-            .end_of_document => unreachable,
-            else => {},
-        }
-    }
-}
-
-fn parseClass(allocator: Allocator, scanner: *Scanner, kind: EntryKind) !Entry {
+fn parseClass(allocator: Allocator, scanner: *Scanner, kind: EntryKind, db: *DocDatabase) !void {
     var entry: Entry = .{
+        .name = undefined,
+        .full_path = undefined,
+        .kind = kind,
+    };
+
+    var method_entries: ArrayList(Entry) = .empty;
+
+    while (true) {
+        const token = try scanner.next();
+        switch (token) {
+            .string => |s| {
+                std.debug.assert(scanner.string_is_object_key);
+
+                switch (std.meta.stringToEnum(ClassKey, s) orelse std.debug.panic("Unexpected class key: {s}", .{s})) {
+                    .name => {
+                        const name = try scanner.next();
+                        std.debug.assert(name == .string);
+
+                        entry.name = try allocator.dupe(u8, name.string);
+                        entry.full_path = entry.name;
+                    },
+                    .methods => {
+                        const methods = try scanner.next();
+                        std.debug.assert(methods == .array_begin);
+
+                        while (true) {
+                            const method_token = try scanner.next();
+                            switch (method_token) {
+                                .object_begin => {
+                                    try method_entries.append(allocator, try parseMethod(.method, allocator, scanner));
+                                },
+                                .array_end => break,
+                                .end_of_document => unreachable,
+                                else => {},
+                            }
+                        }
+                    },
+                }
+            },
+            .object_end => break,
+            .end_of_document => unreachable,
+            else => {},
+        }
+    }
+
+    try db.symbols.put(allocator, entry.name, entry);
+    const parent_index = db.symbols.getIndex(entry.name).?;
+
+    for (method_entries.items) |*method_entry| {
+        method_entry.parent_index = parent_index;
+        method_entry.full_path = try std.fmt.allocPrint(allocator, "{s}.{s}", .{ entry.name, method_entry.name });
+        try db.symbols.put(allocator, method_entry.full_path, method_entry.*);
+    }
+}
+
+const MethodKey = enum {
+    name,
+};
+
+fn parseMethod(comptime kind: EntryKind, allocator: Allocator, scanner: *Scanner) !Entry {
+    switch (kind) {
+        .method, .global_function => {},
+        else => comptime unreachable,
+    }
+
+    var method: Entry = .{
         .name = undefined,
         .full_path = undefined,
         .kind = kind,
@@ -103,13 +156,15 @@ fn parseClass(allocator: Allocator, scanner: *Scanner, kind: EntryKind) !Entry {
         const token = try scanner.next();
         switch (token) {
             .string => |s| {
-                const is_key = scanner.string_is_object_key;
-                if (is_key and std.mem.eql(u8, s, "name")) {
-                    const name = try scanner.next();
+                std.debug.assert(scanner.string_is_object_key);
 
-                    std.debug.assert(name == .string);
-                    entry.name = try allocator.dupe(u8, name.string);
-                    entry.full_path = entry.name;
+                switch (std.meta.stringToEnum(MethodKey, s) orelse std.debug.panic("Unexpected method key: {s}", .{s})) {
+                    .name => {
+                        const name = try scanner.next();
+                        std.debug.assert(name == .string);
+
+                        method.name = try allocator.dupe(u8, name.string);
+                    },
                 }
             },
             .object_end => break,
@@ -118,7 +173,7 @@ fn parseClass(allocator: Allocator, scanner: *Scanner, kind: EntryKind) !Entry {
         }
     }
 
-    return entry;
+    return method;
 }
 
 test "parse simple builtin class from JSON" {
@@ -172,9 +227,51 @@ test "parse regular class from JSON" {
     try std.testing.expectEqual(EntryKind.class, entry.?.kind);
 }
 
+test "parse method with parent" {
+    var arena = ArenaAllocator.init(std.testing.allocator);
+    const allocator = arena.allocator();
+    defer arena.deinit();
+
+    const json_source =
+        \\{
+        \\  "classes": [
+        \\    {
+        \\      "name": "Node2D",
+        \\      "methods": [
+        \\        {
+        \\          "name": "get_global_position"
+        \\        }
+        \\      ]
+        \\    }
+        \\  ]
+        \\}
+    ;
+
+    var json_scanner = Scanner.initCompleteInput(allocator, json_source);
+    const db = try DocDatabase.loadFromJsonLeaky(allocator, &json_scanner);
+
+    // Verify the class exists
+    const class_entry = db.symbols.get("Node2D");
+    try std.testing.expect(class_entry != null);
+
+    // Verify the method exists with correct full_path
+    const method_entry = db.symbols.get("Node2D.get_global_position");
+    try std.testing.expect(method_entry != null);
+    try std.testing.expectEqualStrings("get_global_position", method_entry.?.name);
+    try std.testing.expectEqualStrings("Node2D.get_global_position", method_entry.?.full_path);
+    try std.testing.expectEqual(EntryKind.method, method_entry.?.kind);
+
+    // Verify parent points to the class
+    try std.testing.expect(method_entry.?.parent_index != null);
+
+    const parent = db.symbols.values()[method_entry.?.parent_index.?];
+    try std.testing.expectEqualStrings("Node2D", parent.name);
+}
+
 const std = @import("std");
 const ArenaAllocator = std.heap.ArenaAllocator;
 const Allocator = std.mem.Allocator;
 const Scanner = std.json.Scanner;
 const Token = std.json.Token;
 const StringArrayHashMap = std.StringArrayHashMapUnmanaged;
+const ArrayList = std.ArrayListUnmanaged;
