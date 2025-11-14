@@ -46,6 +46,7 @@ pub fn loadFromJsonLeaky(gpa: Allocator, scanner: *Scanner) !DocDatabase {
                 std.debug.assert(scanner.string_is_object_key);
                 switch (std.meta.stringToEnum(RootState, s) orelse continue) {
                     .builtin_classes => try parseBuiltinClasses(gpa, scanner, &db),
+                    .classes => try parseClasses(gpa, scanner, &db),
                     else => continue,
                 }
             },
@@ -57,6 +58,23 @@ pub fn loadFromJsonLeaky(gpa: Allocator, scanner: *Scanner) !DocDatabase {
     return db;
 }
 
+fn parseClasses(allocator: Allocator, scanner: *Scanner, db: *DocDatabase) !void {
+    std.debug.assert(try scanner.next() == .array_begin);
+
+    while (true) {
+        const token = try scanner.next();
+        switch (token) {
+            .object_begin => {
+                const entry = try parseClass(allocator, scanner, .class);
+                try db.symbols.put(allocator, entry.name, entry);
+            },
+            .array_end => break,
+            .end_of_document => unreachable,
+            else => {},
+        }
+    }
+}
+
 fn parseBuiltinClasses(allocator: Allocator, scanner: *Scanner, db: *DocDatabase) !void {
     std.debug.assert(try scanner.next() == .array_begin);
 
@@ -64,23 +82,21 @@ fn parseBuiltinClasses(allocator: Allocator, scanner: *Scanner, db: *DocDatabase
         const token = try scanner.next();
         switch (token) {
             .object_begin => {
-                const entry = try parseClass(allocator, scanner);
+                const entry = try parseClass(allocator, scanner, .builtin_class);
                 try db.symbols.put(allocator, entry.name, entry);
             },
             .array_end => break,
             .end_of_document => unreachable,
-            else => {
-                std.debug.print("  Token: {}\n", .{token});
-            },
+            else => {},
         }
     }
 }
 
-fn parseClass(allocator: Allocator, scanner: *Scanner) !Entry {
+fn parseClass(allocator: Allocator, scanner: *Scanner, kind: EntryKind) !Entry {
     var entry: Entry = .{
         .name = undefined,
         .full_path = undefined,
-        .kind = .builtin_class,
+        .kind = kind,
     };
 
     while (true) {
