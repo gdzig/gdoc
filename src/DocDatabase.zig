@@ -146,11 +146,21 @@ fn parseClass(allocator: Allocator, scanner: *Scanner, kind: EntryKind, db: *Doc
 
     try db.symbols.put(allocator, entry.name, entry);
     const parent_index = db.symbols.getIndex(entry.name).?;
+    var entry_ptr = db.symbols.getPtr(entry.name).?;
 
-    for (method_entries.items) |*method_entry| {
+    var member_indices = try allocator.alloc(usize, method_entries.items.len);
+    entry_ptr.members = member_indices;
+
+    for (method_entries.items, 0..) |*method_entry, i| {
         method_entry.parent_index = parent_index;
         method_entry.full_path = try std.fmt.allocPrint(allocator, "{s}.{s}", .{ entry.name, method_entry.name });
+
+        // store method entry in the database
         try db.symbols.put(allocator, method_entry.full_path, method_entry.*);
+
+        // update method index on the parent entry
+        const method_index = db.symbols.getIndex(method_entry.full_path).?;
+        member_indices[i] = method_index;
     }
 }
 
