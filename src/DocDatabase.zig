@@ -47,6 +47,7 @@ pub fn loadFromJsonLeaky(gpa: Allocator, scanner: *Scanner) !DocDatabase {
                 switch (std.meta.stringToEnum(RootState, s) orelse continue) {
                     .builtin_classes => try parseClasses(.builtin_class, gpa, scanner, &db),
                     .classes => try parseClasses(.class, gpa, scanner, &db),
+                    .utility_functions => try parseGlobalMethods(gpa, scanner, &db),
                     else => continue,
                 }
             },
@@ -56,6 +57,23 @@ pub fn loadFromJsonLeaky(gpa: Allocator, scanner: *Scanner) !DocDatabase {
     }
 
     return db;
+}
+
+fn parseGlobalMethods(allocator: Allocator, scanner: *Scanner, db: *DocDatabase) !void {
+    std.debug.assert(try scanner.next() == .array_begin);
+
+    while (true) {
+        const token = try scanner.next();
+        switch (token) {
+            .object_begin => {
+                const method = try parseMethod(.global_function, allocator, scanner);
+                try db.symbols.put(allocator, method.name, method);
+            },
+            .array_end => break,
+            .end_of_document => unreachable,
+            else => {},
+        }
+    }
 }
 
 fn parseClasses(comptime kind: EntryKind, allocator: Allocator, scanner: *Scanner, db: *DocDatabase) !void {
@@ -164,6 +182,7 @@ fn parseMethod(comptime kind: EntryKind, allocator: Allocator, scanner: *Scanner
                         std.debug.assert(name == .string);
 
                         method.name = try allocator.dupe(u8, name.string);
+                        method.full_path = method.name;
                     },
                 }
             },
