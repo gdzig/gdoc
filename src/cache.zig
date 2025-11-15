@@ -1,3 +1,16 @@
+pub fn ensureCacheDir(path: []const u8) !void {
+    var dir = std.fs.openDirAbsolute(path, .{}) catch |err| {
+        switch (err) {
+            error.FileNotFound => {
+                try std.fs.makeDirAbsolute(path);
+                return;
+            },
+            else => return err,
+        }
+    };
+    defer dir.close();
+}
+
 pub fn getCacheDir(allocator: Allocator) ![]const u8 {
     const cache_dir = try known_folders.getPath(allocator, .cache);
     defer if (cache_dir) |cd| allocator.free(cd);
@@ -91,6 +104,54 @@ test "getParsedCachePath returns path to extension_api.parsed" {
     const is_absolute = parsed_path[0] == '/' or
         (parsed_path.len > 2 and parsed_path[1] == ':');
     try std.testing.expect(is_absolute);
+}
+
+test "ensureCacheDir creates directory if it doesn't exist" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const tmp_path = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(tmp_path);
+
+    // Get a unique test cache directory path
+    const test_cache = try std.fmt.allocPrint(
+        allocator,
+        "{s}/gdoc-test-{d}",
+        .{ tmp_path, std.time.timestamp() },
+    );
+    defer allocator.free(test_cache);
+
+    // Call ensureCacheDir with test path
+    try ensureCacheDir(test_cache);
+
+    // Verify directory was created
+    var dir = try std.fs.openDirAbsolute(test_cache, .{});
+    dir.close();
+
+    // Cleanup
+    try std.fs.deleteTreeAbsolute(test_cache);
+}
+
+test "ensureCacheDir succeeds when directory already exists" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_cache = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(test_cache);
+
+    // Call ensureCacheDir - should not fail
+    try ensureCacheDir(test_cache);
+
+    // Verify directory still exists
+    var dir = try std.fs.openDirAbsolute(test_cache, .{});
+    dir.close();
+
+    // Cleanup
+    try std.fs.deleteTreeAbsolute(test_cache);
 }
 
 const std = @import("std");
