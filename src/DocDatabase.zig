@@ -313,6 +313,53 @@ test "parse utility functions as global functions" {
     try std.testing.expect(entry.?.parent_index == null); // No parent
 }
 
+test "class stores member indices not strings" {
+    var arena = ArenaAllocator.init(std.testing.allocator);
+    const allocator = arena.allocator();
+    defer arena.deinit();
+
+    const json_source =
+        \\{
+        \\  "classes": [
+        \\    {
+        \\      "name": "Vector2",
+        \\      "methods": [
+        \\        {
+        \\          "name": "normalized"
+        \\        },
+        \\        {
+        \\          "name": "length"
+        \\        }
+        \\      ]
+        \\    }
+        \\  ]
+        \\}
+    ;
+
+    var json_scanner = Scanner.initCompleteInput(allocator, json_source);
+    const db = try DocDatabase.loadFromJsonLeaky(allocator, &json_scanner);
+
+    // Verify the class has members array
+    const class_entry = db.symbols.get("Vector2");
+    try std.testing.expect(class_entry != null);
+    try std.testing.expect(class_entry.?.members != null);
+
+    // Should have 2 members
+    const members = class_entry.?.members.?;
+    try std.testing.expectEqual(@as(usize, 2), members.len);
+
+    // Members should be indices into the symbols array
+    const first_member = db.symbols.values()[members[0]];
+    const second_member = db.symbols.values()[members[1]];
+
+    // Verify members are the methods
+    try std.testing.expectEqualStrings("normalized", first_member.name);
+    try std.testing.expectEqual(EntryKind.method, first_member.kind);
+
+    try std.testing.expectEqualStrings("length", second_member.name);
+    try std.testing.expectEqual(EntryKind.method, second_member.kind);
+}
+
 const std = @import("std");
 const ArenaAllocator = std.heap.ArenaAllocator;
 const Allocator = std.mem.Allocator;
