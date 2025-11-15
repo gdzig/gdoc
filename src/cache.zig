@@ -39,6 +39,16 @@ pub const CacheFile = struct {
     }
 };
 
+pub fn clearCache(allocator: Allocator) !void {
+    const cache_dir = try getCacheDir(allocator);
+    defer allocator.free(cache_dir);
+
+    std.fs.deleteTreeAbsolute(cache_dir) catch |err| switch (err) {
+        error.FileNotFound => {},
+        else => return err,
+    };
+}
+
 fn writeCacheFile(cache_path: []const u8, data: []const u8) !void {
     var file = try std.fs.createFileAbsolute(cache_path, .{});
     defer file.close();
@@ -475,6 +485,65 @@ test "CacheFile.verifyChecksum returns error when data does not match checksum" 
     // Should return error.ChecksumError
     const result = cache_file.verifyChecksum();
     try std.testing.expectError(error.ChecksumError, result);
+}
+
+test "clearCache deletes both JSON and parsed cache files" {
+    const allocator = std.testing.allocator;
+
+    // Get actual cache paths
+    const json_path = try getJsonCachePath(allocator);
+    defer allocator.free(json_path);
+
+    const parsed_path = try getParsedCachePath(allocator);
+    defer allocator.free(parsed_path);
+
+    const cache_dir = try getCacheDir(allocator);
+    defer allocator.free(cache_dir);
+
+    // Ensure cache directory exists
+    try ensureCacheDir(cache_dir);
+
+    // Create both cache files
+    var json_file = try std.fs.createFileAbsolute(json_path, .{});
+    json_file.close();
+
+    var parsed_file = try std.fs.createFileAbsolute(parsed_path, .{});
+    parsed_file.close();
+
+    // Verify files exist
+    _ = try std.fs.openFileAbsolute(json_path, .{});
+    _ = try std.fs.openFileAbsolute(parsed_path, .{});
+
+    // Clear cache
+    try clearCache(allocator);
+
+    // Verify files are deleted
+    const json_result = std.fs.openFileAbsolute(json_path, .{});
+    try std.testing.expectError(error.FileNotFound, json_result);
+
+    const parsed_result = std.fs.openFileAbsolute(parsed_path, .{});
+    try std.testing.expectError(error.FileNotFound, parsed_result);
+}
+
+test "clearCache succeeds when cache files do not exist" {
+    const allocator = std.testing.allocator;
+
+    // Don't create any files - just call clearCache
+    // Should not error even if files don't exist
+    try clearCache(allocator);
+}
+
+test "clearCache succeeds when cache directory does not exist" {
+    const allocator = std.testing.allocator;
+
+    const cache_dir = try getCacheDir(allocator);
+    defer allocator.free(cache_dir);
+
+    // Make sure cache directory doesn't exist
+    std.fs.deleteTreeAbsolute(cache_dir) catch {};
+
+    // Call clearCache - should not error
+    try clearCache(allocator);
 }
 
 const std = @import("std");
