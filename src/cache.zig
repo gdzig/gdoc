@@ -1,3 +1,20 @@
+const cache_version: u32 = 1;
+
+pub const CacheHeader = struct {
+    magic: [4]u8,
+    version: u32,
+    checksum: u32,
+
+    pub fn isValid(self: CacheHeader) bool {
+        return self.magic[0] == 'G' and
+            self.magic[1] == 'D' and
+            self.magic[2] == 'O' and
+            self.magic[3] == 'C' and
+            self.version == cache_version and
+            self.checksum > 0;
+    }
+};
+
 pub fn ensureCacheDir(path: []const u8) !void {
     var dir = std.fs.openDirAbsolute(path, .{}) catch |err| {
         switch (err) {
@@ -152,6 +169,59 @@ test "ensureCacheDir succeeds when directory already exists" {
 
     // Cleanup
     try std.fs.deleteTreeAbsolute(test_cache);
+}
+
+test "CacheHeader has correct magic bytes GDOC" {
+    const header = CacheHeader{
+        .magic = .{ 'G', 'D', 'O', 'C' },
+        .version = 1,
+        .checksum = 0x12345678,
+    };
+
+    try std.testing.expectEqual('G', header.magic[0]);
+    try std.testing.expectEqual('D', header.magic[1]);
+    try std.testing.expectEqual('O', header.magic[2]);
+    try std.testing.expectEqual('C', header.magic[3]);
+}
+
+test "CacheHeader.isValid returns true for valid header" {
+    const header = CacheHeader{
+        .magic = .{ 'G', 'D', 'O', 'C' },
+        .version = cache_version,
+        .checksum = 0x12345678,
+    };
+
+    try std.testing.expect(header.isValid());
+}
+
+test "CacheHeader.isValid returns false for wrong magic" {
+    const header = CacheHeader{
+        .magic = .{ 'B', 'A', 'D', '!' },
+        .version = cache_version,
+        .checksum = 0x12345678,
+    };
+
+    try std.testing.expect(!header.isValid());
+}
+
+test "CacheHeader.isValid returns false for wrong version" {
+    const header = CacheHeader{
+        .magic = .{ 'G', 'D', 'O', 'C' },
+        .version = cache_version + 1,
+        .checksum = 0x12345678,
+    };
+
+    try std.testing.expect(!header.isValid());
+}
+
+test "CacheHeader.checksumMatches returns true when checksums match" {
+    const header = CacheHeader{
+        .magic = .{ 'G', 'D', 'O', 'C' },
+        .version = cache_version,
+        .checksum = 0xABCDEF00,
+    };
+
+    try std.testing.expectEqual(0xABCDEF00, header.checksum);
 }
 
 const std = @import("std");
