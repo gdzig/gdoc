@@ -370,6 +370,36 @@ test "class stores member indices not strings" {
     try std.testing.expectEqual(EntryKind.method, second_member.kind);
 }
 
+test "convert BBCode description to Markdown" {
+    var arena = ArenaAllocator.init(std.testing.allocator);
+    const allocator = arena.allocator();
+    defer arena.deinit();
+
+    const json_source =
+        \\{
+        \\  "classes": [
+        \\    {
+        \\      "name": "Node2D",
+        \\      "brief_description": "A 2D game object with [b]position[/b] and [i]rotation[/i]."
+        \\    }
+        \\  ]
+        \\}
+    ;
+
+    var json_scanner = Scanner.initCompleteInput(allocator, json_source);
+    const db = try DocDatabase.loadFromJsonLeaky(allocator, &json_scanner);
+
+    const entry = db.symbols.get("Node2D");
+    try std.testing.expect(entry != null);
+    try std.testing.expect(entry.?.description != null);
+
+    // BBCode should be converted to Markdown
+    // [b]text[/b] -> **text**
+    // [i]text[/i] -> *text*
+    const expected = "A 2D game object with **position** and *rotation*.";
+    try std.testing.expectEqualStrings(expected, entry.?.description.?);
+}
+
 const std = @import("std");
 const ArenaAllocator = std.heap.ArenaAllocator;
 const Allocator = std.mem.Allocator;

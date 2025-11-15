@@ -12,6 +12,9 @@ pub fn build(b: *std.Build) void {
     const mod = b.addModule("gdoc", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
+        .imports = &.{
+            .{ .name = "bbcodez", .module = bbcodez },
+        },
     });
 
     const exe = b.addExecutable(.{
@@ -22,7 +25,6 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "gdoc", .module = mod },
-                .{ .name = "bbcodez", .module = bbcodez },
             },
         }),
     });
