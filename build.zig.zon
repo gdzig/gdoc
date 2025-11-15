@@ -9,8 +9,8 @@
             .hash = "bbcodez-0.0.1-dev-YlrOBtiaAQBg3W_GpcPadnJpkfSw8MN3dT-emD79AWPS",
         },
         .known_folders = .{
-            .url = "git+https://github.com/ziglibs/known-folders.git#bafef170a73c064dc706fcfbdc2e406a35681a9c",
-            .hash = "known_folders-0.0.0-Fy-PJovNAAAtqbaXgBhV6G-Z4-WNo7P0Rov-x-npZq21",
+            .url = "https://github.com/ziglibs/known-folders/archive/83d39161eac2ed6f37ad3cb4d9dd518696ce90bb.tar.gz",
+            .hash = "known_folders-0.0.0-Fy-PJv3LAAABBRVoZWVrKZdyLoUfl5VRY5fqRRRdnF5L",
         },
     },
     .paths = .{

@@ -1,31 +1,42 @@
-//! By convention, root.zig is the root source file when making a library.
-const std = @import("std");
-
-// Public exports
 pub const DocDatabase = @import("DocDatabase.zig");
 
-pub fn bufferedPrint() !void {
-    // Stdout is for the actual output of your application, for example if you
-    // are implementing gzip, then only the compressed bytes should be sent to
-    // stdout, not any debugging messages.
-    var stdout_buffer: [1024]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
-    const stdout = &stdout_writer.interface;
+pub fn getCacheDir(allocator: Allocator) ![]const u8 {
+    const cache_dir = try known_folders.getPath(allocator, .cache);
+    defer if (cache_dir) |cd| allocator.free(cd);
 
-    try stdout.print("Run `zig build test` to run the tests.\n", .{});
+    std.debug.assert(cache_dir != null);
 
-    try stdout.flush(); // Don't forget to flush!
+    return std.fmt.allocPrint(
+        allocator,
+        "{f}",
+        .{std.fs.path.fmtJoin(&[_][]const u8{ cache_dir.?, "gdoc" })},
+    );
 }
 
-pub fn add(a: i32, b: i32) i32 {
-    return a + b;
-}
+test "getCacheDir returns cache directory path" {
+    const allocator = std.testing.allocator;
 
-test "basic add functionality" {
-    try std.testing.expect(add(3, 7) == 10);
+    const cache_dir = try getCacheDir(allocator);
+    defer allocator.free(cache_dir);
+
+    // Should return a non-empty path
+    try std.testing.expect(cache_dir.len > 0);
+
+    // Should end with "gdoc"
+    try std.testing.expect(std.mem.endsWith(u8, cache_dir, "gdoc"));
+
+    // Should be an absolute path (starts with / on Unix or contains : on Windows)
+    const is_absolute = cache_dir[0] == '/' or
+        (cache_dir.len > 2 and cache_dir[1] == ':');
+    try std.testing.expect(is_absolute);
 }
 
 // Import tests from other modules
 comptime {
     std.testing.refAllDecls(@This());
 }
+
+const std = @import("std");
+const Allocator = std.mem.Allocator;
+
+const known_folders = @import("known-folders");
