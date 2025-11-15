@@ -95,7 +95,19 @@ fn parseClasses(comptime kind: EntryKind, allocator: Allocator, scanner: *Scanne
 const ClassKey = enum {
     name,
     methods,
+    brief_description,
 };
+
+fn bbcodeToMarkdown(allocator: Allocator, input: []const u8) ![]const u8 {
+    var output: std.Io.Writer.Allocating = .init(allocator);
+
+    const bbcode_doc = try bbcodez.loadFromBuffer(allocator, input, .{});
+    defer bbcode_doc.deinit();
+
+    try bbcodez.fmt.md.renderDocument(allocator, bbcode_doc, &output.writer, .{});
+
+    return try output.toOwnedSlice();
+}
 
 fn parseClass(allocator: Allocator, scanner: *Scanner, kind: EntryKind, db: *DocDatabase) !void {
     var entry: Entry = .{
@@ -135,6 +147,11 @@ fn parseClass(allocator: Allocator, scanner: *Scanner, kind: EntryKind, db: *Doc
                                 else => {},
                             }
                         }
+                    },
+                    .brief_description => {
+                        const brief_description = try scanner.next();
+                        std.debug.assert(brief_description == .string);
+                        entry.description = try bbcodeToMarkdown(allocator, brief_description.string);
                     },
                 }
             },
@@ -407,3 +424,5 @@ const Scanner = std.json.Scanner;
 const Token = std.json.Token;
 const StringArrayHashMap = std.StringArrayHashMapUnmanaged;
 const ArrayList = std.ArrayListUnmanaged;
+
+const bbcodez = @import("bbcodez");
