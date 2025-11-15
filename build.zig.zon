@@ -8,6 +8,10 @@
             .url = "git+https://github.com/deevus/bbcodez.git#c289e0f3b6e0ebd0fba9e76a688775282feadb70",
             .hash = "bbcodez-0.0.1-dev-YlrOBtiaAQBg3W_GpcPadnJpkfSw8MN3dT-emD79AWPS",
         },
+        .known_folders = .{
+            .url = "git+https://github.com/ziglibs/known-folders.git#bafef170a73c064dc706fcfbdc2e406a35681a9c",
+            .hash = "known_folders-0.0.0-Fy-PJovNAAAtqbaXgBhV6G-Z4-WNo7P0Rov-x-npZq21",
+        },
     },
     .paths = .{
         "build.zig",

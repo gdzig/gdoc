@@ -9,11 +9,17 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     }).module("bbcodez");
 
+    const known_folders = b.dependency("known_folders", .{
+        .target = target,
+        .optimize = optimize,
+    }).module("known-folders");
+
     const mod = b.addModule("gdoc", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .imports = &.{
             .{ .name = "bbcodez", .module = bbcodez },
+            .{ .name = "known-folders", .module = known_folders },
         },
     });
 
