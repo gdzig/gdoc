@@ -17,7 +17,19 @@ pub fn getJsonCachePath(allocator: Allocator) ![]const u8 {
 
     return std.fmt.allocPrint(
         allocator,
+        "{f}",
         .{std.fs.path.fmtJoin(&[_][]const u8{ cache_dir, "extension_api.json" })},
+    );
+}
+
+pub fn getParsedCachePath(allocator: Allocator) ![]const u8 {
+    const cache_dir = try getCacheDir(allocator);
+    defer allocator.free(cache_dir);
+
+    return std.fmt.allocPrint(
+        allocator,
+        "{f}",
+        .{std.fs.path.fmtJoin(&[_][]const u8{ cache_dir, "extension_api.parsed" })},
     );
 }
 
@@ -57,6 +69,27 @@ test "getJsonCachePath returns path to extension_api.json" {
     // Should be an absolute path
     const is_absolute = json_path[0] == '/' or
         (json_path.len > 2 and json_path[1] == ':');
+    try std.testing.expect(is_absolute);
+}
+
+test "getParsedCachePath returns path to extension_api.parsed" {
+    const allocator = std.testing.allocator;
+
+    const parsed_path = try getParsedCachePath(allocator);
+    defer allocator.free(parsed_path);
+
+    // Should return a non-empty path
+    try std.testing.expect(parsed_path.len > 0);
+
+    // Should end with "extension_api.parsed"
+    try std.testing.expect(std.mem.endsWith(u8, parsed_path, "extension_api.parsed"));
+
+    // Should contain "gdoc" directory in the path
+    try std.testing.expect(std.mem.indexOf(u8, parsed_path, "gdoc") != null);
+
+    // Should be an absolute path
+    const is_absolute = parsed_path[0] == '/' or
+        (parsed_path.len > 2 and parsed_path[1] == ':');
     try std.testing.expect(is_absolute);
 }
 
