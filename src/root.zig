@@ -1,5 +1,6 @@
 pub const DocDatabase = @import("DocDatabase.zig");
 pub const cache = @import("cache.zig");
+pub const api = @import("api.zig");
 
 // Import tests from other modules
 comptime {
