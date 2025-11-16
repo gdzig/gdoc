@@ -4,6 +4,10 @@ const empty = DocDatabase{};
 
 symbols: StringArrayHashMap(Entry) = .empty,
 
+pub const Error = error{
+    SymbolNotFound,
+};
+
 pub const EntryKind = enum {
     builtin_class,
     class,

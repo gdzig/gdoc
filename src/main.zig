@@ -1,28 +1,31 @@
-const std = @import("std");
-const gdoc = @import("gdoc");
-const bbcodez = @import("bbcodez");
-
 pub fn main() !void {
-    // Prints to stderr, ignoring potential errors.
-    std.debug.print("All your {s} are belong to us.\n", .{"codebase"});
-    try gdoc.bufferedPrint();
-}
+    var dbg = DebugAllocator(.{}).init;
 
-test "simple test" {
-    const gpa = std.testing.allocator;
-    var list: std.ArrayList(i32) = .empty;
-    defer list.deinit(gpa); // Try commenting this out and see if zig detects the memory leak!
-    try list.append(gpa, 42);
-    try std.testing.expectEqual(@as(i32, 42), list.pop());
-}
-
-test "fuzz example" {
-    const Context = struct {
-        fn testOne(context: @This(), input: []const u8) anyerror!void {
-            _ = context;
-            // Try passing `--fuzz` to `zig build test` and see if it manages to fail this test case!
-            try std.testing.expect(!std.mem.eql(u8, "canyoufindme", input));
-        }
+    const allocator = switch (@import("builtin").mode) {
+        .Debug => dbg.allocator(),
+        .ReleaseFast, .ReleaseSafe, .ReleaseSmall => std.heap.smp_allocator,
     };
-    try std.testing.fuzz(Context{}, Context.testOne, .{});
+
+    defer if (@import("builtin").mode == .Debug) {
+        std.debug.assert(dbg.deinit() == .ok);
+    };
+
+    var stdout_writer = File.stdout().writerStreaming(&.{});
+    const stdout = &stdout_writer.interface;
+
+    var buf: [4096]u8 = undefined;
+    var stdin_reader = File.stdin().readerStreaming(&buf);
+    const stdin = &stdin_reader.interface;
+
+    const root = try cli.build(allocator, stdout, stdin);
+    defer root.deinit();
+
+    try root.execute(.{});
+    try stdout.flush();
 }
+
+const std = @import("std");
+const DebugAllocator = std.heap.DebugAllocator;
+const File = std.fs.File;
+
+const cli = @import("cli/root.zig");
