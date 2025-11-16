@@ -3,6 +3,7 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const build_options = b.addOptions();
 
     const bbcodez = b.dependency("bbcodez", .{
         .target = target,
@@ -27,6 +28,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "known-folders", .module = known_folders },
         },
     });
+    mod.addOptions("build_options", build_options);
 
     const exe = b.addExecutable(.{
         .name = "gdoc",

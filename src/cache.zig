@@ -90,6 +90,10 @@ fn readCacheFile(allocator: Allocator, cache_path: []const u8) !CacheFile {
 
     header.checksum = try reader.takeInt(u32, .little);
 
+    if (!header.isValid()) {
+        return error.InvalidCacheHeader;
+    }
+
     const data = try reader.readAlloc(allocator, try file.getEndPos() - reader.seek);
     errdefer allocator.free(data);
 
@@ -125,10 +129,7 @@ pub fn getCacheDir(allocator: Allocator) ![]const u8 {
     );
 }
 
-pub fn getJsonCachePath(allocator: Allocator) ![]const u8 {
-    const cache_dir = try getCacheDir(allocator);
-    defer allocator.free(cache_dir);
-
+pub fn getJsonCachePathInDir(allocator: Allocator, cache_dir: []const u8) ![]const u8 {
     return std.fmt.allocPrint(
         allocator,
         "{f}",
@@ -136,15 +137,26 @@ pub fn getJsonCachePath(allocator: Allocator) ![]const u8 {
     );
 }
 
-pub fn getParsedCachePath(allocator: Allocator) ![]const u8 {
-    const cache_dir = try getCacheDir(allocator);
-    defer allocator.free(cache_dir);
-
+pub fn getParsedCachePathInDir(allocator: Allocator, cache_dir: []const u8) ![]const u8 {
     return std.fmt.allocPrint(
         allocator,
         "{f}",
         .{std.fs.path.fmtJoin(&[_][]const u8{ cache_dir, "extension_api.parsed" })},
     );
+}
+
+pub fn getJsonCachePath(allocator: Allocator) ![]const u8 {
+    const cache_dir = try getCacheDir(allocator);
+    defer allocator.free(cache_dir);
+
+    return getJsonCachePathInDir(allocator, cache_dir);
+}
+
+pub fn getParsedCachePath(allocator: Allocator) ![]const u8 {
+    const cache_dir = try getCacheDir(allocator);
+    defer allocator.free(cache_dir);
+
+    return getParsedCachePathInDir(allocator, cache_dir);
 }
 
 test "getCacheDir returns cache directory path" {
