@@ -2,6 +2,12 @@ const cache_version: u32 = 1;
 const cache_magic = 'G' << 24 | 'D' << 16 | 'O' << 8 | 'C';
 
 pub const CacheHeader = packed struct {
+    const init = CacheHeader{
+        .magic = cache_magic,
+        .version = cache_version,
+        .checksum = 0,
+    };
+
     magic: u32,
     version: u32,
     checksum: u32,
@@ -24,6 +30,19 @@ pub const CacheFile = struct {
         if (crc32.final() != self.header.checksum) {
             return error.ChecksumError;
         }
+    }
+
+    pub fn init(data: []const u8) CacheFile {
+        var crc32 = std.hash.Crc32.init();
+        crc32.update(data);
+
+        var header: CacheHeader = .init;
+        header.checksum = crc32.final();
+
+        return CacheFile{
+            .header = header,
+            .data = data,
+        };
     }
 
     pub fn loadFromPath(allocator: Allocator, path: []const u8) !CacheFile {
@@ -103,11 +122,12 @@ fn readCacheFile(allocator: Allocator, cache_path: []const u8) !CacheFile {
     return cache_file;
 }
 
-pub fn ensureCacheDir(path: []const u8) !void {
-    var dir = std.fs.openDirAbsolute(path, .{}) catch |err| {
+// TODO: move to fs module as it is not cache specific
+pub fn ensureDirectoryExists(dir_path: []const u8) !void {
+    var dir = std.fs.openDirAbsolute(dir_path, .{}) catch |err| {
         switch (err) {
             error.FileNotFound => {
-                try std.fs.makeDirAbsolute(path);
+                try std.fs.makeDirAbsolute(dir_path);
                 return;
             },
             else => return err,
@@ -237,7 +257,7 @@ test "ensureCacheDir creates directory if it doesn't exist" {
     defer allocator.free(test_cache);
 
     // Call ensureCacheDir with test path
-    try ensureCacheDir(test_cache);
+    try ensureDirectoryExists(test_cache);
 
     // Verify directory was created
     var dir = try std.fs.openDirAbsolute(test_cache, .{});
@@ -257,7 +277,7 @@ test "ensureCacheDir succeeds when directory already exists" {
     defer allocator.free(test_cache);
 
     // Call ensureCacheDir - should not fail
-    try ensureCacheDir(test_cache);
+    try ensureDirectoryExists(test_cache);
 
     // Verify directory still exists
     var dir = try std.fs.openDirAbsolute(test_cache, .{});
@@ -513,7 +533,7 @@ test "clearCache deletes both JSON and parsed cache files" {
     defer allocator.free(cache_dir);
 
     // Ensure cache directory exists
-    try ensureCacheDir(cache_dir);
+    try ensureDirectoryExists(cache_dir);
 
     // Create both cache files
     var json_file = try std.fs.createFileAbsolute(json_path, .{});

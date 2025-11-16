@@ -20,8 +20,8 @@ pub const EntryKind = enum {
 };
 
 pub const Entry = struct {
+    key: []const u8,
     name: []const u8,
-    full_path: []const u8,
     parent_index: ?usize = null,
     kind: EntryKind,
     description: ?[]const u8 = null,
@@ -39,6 +39,20 @@ const RootState = enum {
     singletons,
     utility_functions,
 };
+
+pub fn loadFromJsonFileLeaky(gpa: Allocator, file: File) !DocDatabase {
+    var buf: [4096]u8 = undefined;
+    var file_reader = file.reader(&buf);
+    const reader = &file_reader.interface;
+
+    const file_content = try reader.readAlloc(gpa, try file.getEndPos());
+    defer gpa.free(file_content);
+
+    var scanner = Scanner.initCompleteInput(gpa, file_content);
+    defer scanner.deinit();
+
+    return try loadFromJsonLeaky(gpa, &scanner);
+}
 
 pub fn loadFromJsonLeaky(gpa: Allocator, scanner: *Scanner) !DocDatabase {
     var db = empty;
@@ -71,7 +85,7 @@ fn parseGlobalMethods(allocator: Allocator, scanner: *Scanner, db: *DocDatabase)
         switch (token) {
             .object_begin => {
                 const method = try parseMethod(.global_function, allocator, scanner);
-                try db.symbols.put(allocator, method.name, method);
+                try db.symbols.put(allocator, method.key, method);
             },
             .array_end => break,
             .end_of_document => unreachable,
@@ -116,7 +130,7 @@ fn bbcodeToMarkdown(allocator: Allocator, input: []const u8) ![]const u8 {
 fn parseClass(allocator: Allocator, scanner: *Scanner, kind: EntryKind, db: *DocDatabase) !void {
     var entry: Entry = .{
         .name = undefined,
-        .full_path = undefined,
+        .key = undefined,
         .kind = kind,
     };
 
@@ -134,7 +148,7 @@ fn parseClass(allocator: Allocator, scanner: *Scanner, kind: EntryKind, db: *Doc
                         std.debug.assert(name == .string);
 
                         entry.name = try allocator.dupe(u8, name.string);
-                        entry.full_path = entry.name;
+                        entry.key = entry.name;
                     },
                     .methods => {
                         const methods = try scanner.next();
@@ -165,7 +179,7 @@ fn parseClass(allocator: Allocator, scanner: *Scanner, kind: EntryKind, db: *Doc
         }
     }
 
-    try db.symbols.put(allocator, entry.name, entry);
+    try db.symbols.put(allocator, entry.key, entry);
     const parent_index = db.symbols.getIndex(entry.name).?;
     var entry_ptr = db.symbols.getPtr(entry.name).?;
 
@@ -174,13 +188,13 @@ fn parseClass(allocator: Allocator, scanner: *Scanner, kind: EntryKind, db: *Doc
 
     for (method_entries.items, 0..) |*method_entry, i| {
         method_entry.parent_index = parent_index;
-        method_entry.full_path = try std.fmt.allocPrint(allocator, "{s}.{s}", .{ entry.name, method_entry.name });
+        method_entry.key = try std.fmt.allocPrint(allocator, "{s}.{s}", .{ entry.name, method_entry.name });
 
         // store method entry in the database
-        try db.symbols.put(allocator, method_entry.full_path, method_entry.*);
+        try db.symbols.put(allocator, method_entry.key, method_entry.*);
 
         // update method index on the parent entry
-        const method_index = db.symbols.getIndex(method_entry.full_path).?;
+        const method_index = db.symbols.getIndex(method_entry.key).?;
         member_indices[i] = method_index;
     }
 }
@@ -197,7 +211,7 @@ fn parseMethod(comptime kind: EntryKind, allocator: Allocator, scanner: *Scanner
 
     var method: Entry = .{
         .name = undefined,
-        .full_path = undefined,
+        .key = undefined,
         .kind = kind,
     };
 
@@ -213,7 +227,7 @@ fn parseMethod(comptime kind: EntryKind, allocator: Allocator, scanner: *Scanner
                         std.debug.assert(name == .string);
 
                         method.name = try allocator.dupe(u8, name.string);
-                        method.full_path = method.name;
+                        method.key = method.name;
                     },
                 }
             },
@@ -308,7 +322,7 @@ test "parse method with parent" {
     const method_entry = db.symbols.get("Node2D.get_global_position");
     try std.testing.expect(method_entry != null);
     try std.testing.expectEqualStrings("get_global_position", method_entry.?.name);
-    try std.testing.expectEqualStrings("Node2D.get_global_position", method_entry.?.full_path);
+    try std.testing.expectEqualStrings("Node2D.get_global_position", method_entry.?.key);
     try std.testing.expectEqual(EntryKind.method, method_entry.?.kind);
 
     // Verify parent points to the class
@@ -339,7 +353,7 @@ test "parse utility functions as global functions" {
     const entry = db.symbols.get("sin");
     try std.testing.expect(entry != null);
     try std.testing.expectEqualStrings("sin", entry.?.name);
-    try std.testing.expectEqualStrings("sin", entry.?.full_path);
+    try std.testing.expectEqualStrings("sin", entry.?.key);
     try std.testing.expectEqual(EntryKind.global_function, entry.?.kind);
     try std.testing.expect(entry.?.parent_index == null); // No parent
 }
@@ -425,8 +439,10 @@ const std = @import("std");
 const ArenaAllocator = std.heap.ArenaAllocator;
 const Allocator = std.mem.Allocator;
 const Scanner = std.json.Scanner;
+const Reader = std.json.Reader;
 const Token = std.json.Token;
 const StringArrayHashMap = std.StringArrayHashMapUnmanaged;
 const ArrayList = std.ArrayListUnmanaged;
+const File = std.fs.File;
 
 const bbcodez = @import("bbcodez");
