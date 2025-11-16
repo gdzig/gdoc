@@ -12,6 +12,10 @@
             .url = "https://github.com/ziglibs/known-folders/archive/83d39161eac2ed6f37ad3cb4d9dd518696ce90bb.tar.gz",
             .hash = "known_folders-0.0.0-Fy-PJv3LAAABBRVoZWVrKZdyLoUfl5VRY5fqRRRdnF5L",
         },
+        .zli = .{
+            .url = "https://github.com/xcaeser/zli/archive/v4.3.0.tar.gz",
+            .hash = "zli-4.3.0-LeUjpmbfAACPnRj2nzbzaLMNfTkq-LEWSC9EfOcnFxjl",
+        },
     },
     .paths = .{
         "build.zig",
