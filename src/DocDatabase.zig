@@ -6,6 +6,7 @@ symbols: StringArrayHashMap(Entry) = .empty,
 
 pub const Error = error{
     SymbolNotFound,
+    InvalidApiJson,
 };
 
 pub const EntryKind = enum {
@@ -51,7 +52,10 @@ pub fn loadFromJsonFileLeaky(gpa: Allocator, file: File) !DocDatabase {
     var scanner = Scanner.initCompleteInput(gpa, file_content);
     defer scanner.deinit();
 
-    return try loadFromJsonLeaky(gpa, &scanner);
+    return loadFromJsonLeaky(gpa, &scanner) catch |err| switch (err) {
+        Scanner.Error.SyntaxError, Scanner.Error.UnexpectedEndOfInput => return Error.InvalidApiJson,
+        else => return err,
+    };
 }
 
 pub fn loadFromJsonLeaky(gpa: Allocator, scanner: *Scanner) !DocDatabase {
@@ -238,6 +242,10 @@ fn parseMethod(comptime kind: EntryKind, allocator: Allocator, scanner: *Scanner
     }
 
     return method;
+}
+
+pub fn lookupSymbolExact(self: DocDatabase, symbol: []const u8) DocDatabase.Error!Entry {
+    return self.symbols.get(symbol) orelse return DocDatabase.Error.SymbolNotFound;
 }
 
 test "parse simple builtin class from JSON" {

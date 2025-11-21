@@ -18,6 +18,13 @@ pub fn build(allocator: Allocator, writer: *Writer, reader: *Reader) !*Command {
         .default_value = .{ .Bool = false },
     });
 
+    try root.addFlag(.{
+        .name = "godot-extension-api",
+        .description = "Path to Godot extension_api.json file (bypasses cache)",
+        .type = .String,
+        .default_value = .{ .String = "" },
+    });
+
     try root.addPositionalArg(.{
         .name = "symbol",
         .description = "Symbol to look up. (E.g. Node2D, Node2D.position)",
@@ -29,10 +36,13 @@ pub fn build(allocator: Allocator, writer: *Writer, reader: *Reader) !*Command {
 
 fn runLookup(ctx: CommandContext) !void {
     const clear_cache = ctx.flag("clear-cache", bool);
+    const api_json_path_raw = ctx.flag("godot-extension-api", []const u8);
+    const api_json_path: ?[]const u8 = if (api_json_path_raw.len == 0) null else api_json_path_raw;
 
     // print help when no arguments/flags are provided
-    if (!clear_cache and ctx.positional_args.len == 0) {
+    if (!clear_cache and ctx.positional_args.len == 0 and api_json_path == null) {
         try ctx.command.printHelp();
+        return;
     }
 
     if (clear_cache) {
@@ -41,8 +51,11 @@ fn runLookup(ctx: CommandContext) !void {
     }
 
     const symbol = ctx.getArg("symbol") orelse return;
-    gdoc.lookupAndDisplay(symbol, ctx.writer) catch |err| switch (err) {
+
+    gdoc.lookupAndDisplay(ctx.allocator, symbol, api_json_path, ctx.writer) catch |err| switch (err) {
         DocDatabaseError.SymbolNotFound => try ctx.writer.print("Symbol '{s}' not found.\n", .{symbol}),
+        error.ApiFileNotFound => try ctx.writer.print("Error: API file not found: {s}\n", .{api_json_path.?}),
+        error.InvalidApiJson => try ctx.writer.print("Error: Invalid JSON in API file: {s}\n", .{api_json_path.?}),
         else => return err,
     };
 
