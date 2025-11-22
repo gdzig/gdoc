@@ -1,3 +1,7 @@
+pub const std_options = std.Options{
+    .log_level = .err,
+};
+
 pub fn main() !void {
     var dbg = DebugAllocator(.{}).init;
 

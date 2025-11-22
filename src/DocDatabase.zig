@@ -150,8 +150,12 @@ fn parseClass(allocator: Allocator, scanner: *Scanner, kind: EntryKind, db: *Doc
         switch (token) {
             .string => |s| {
                 std.debug.assert(scanner.string_is_object_key);
+                const class_key = std.meta.stringToEnum(ClassKey, s) orelse {
+                    try scanner.skipValue();
+                    continue;
+                };
 
-                switch (std.meta.stringToEnum(ClassKey, s) orelse std.debug.panic("Unexpected class key: {s}", .{s})) {
+                switch (class_key) {
                     .name => {
                         const name = try scanner.next();
                         std.debug.assert(name == .string);
@@ -176,9 +180,14 @@ fn parseClass(allocator: Allocator, scanner: *Scanner, kind: EntryKind, db: *Doc
                         }
                     },
                     .brief_description => {
-                        const brief_description = try scanner.next();
-                        std.debug.assert(brief_description == .string);
-                        entry.description = try bbcodeToMarkdown(allocator, brief_description.string);
+                        const brief_description = try scanner.nextAlloc(allocator, .alloc_if_needed);
+
+                        const value = switch (brief_description) {
+                            inline .string, .allocated_string => |str| str,
+                            else => unreachable,
+                        };
+
+                        entry.description = try bbcodeToMarkdown(allocator, value);
                     },
                 }
             },
@@ -229,8 +238,12 @@ fn parseMethod(comptime kind: EntryKind, allocator: Allocator, scanner: *Scanner
         switch (token) {
             .string => |s| {
                 std.debug.assert(scanner.string_is_object_key);
+                const method_key = std.meta.stringToEnum(MethodKey, s) orelse {
+                    try scanner.skipValue();
+                    continue;
+                };
 
-                switch (std.meta.stringToEnum(MethodKey, s) orelse std.debug.panic("Unexpected method key: {s}", .{s})) {
+                switch (method_key) {
                     .name => {
                         const name = try scanner.next();
                         std.debug.assert(name == .string);
@@ -491,6 +504,69 @@ test "skip unknown root-level keys like header" {
     const entry = db.symbols.get("Node2D");
     try std.testing.expect(entry != null);
     try std.testing.expectEqualStrings("Node2D", entry.?.name);
+}
+
+test "skip unknown method fields like return_type" {
+    var arena = ArenaAllocator.init(std.testing.allocator);
+    const allocator = arena.allocator();
+    defer arena.deinit();
+
+    // JSON with method containing fields beyond just "name"
+    const json_source =
+        \\{
+        \\  "utility_functions": [
+        \\    {
+        \\      "name": "sin",
+        \\      "return_type": "float",
+        \\      "category": "math",
+        \\      "is_vararg": false,
+        \\      "hash": 12345,
+        \\      "arguments": []
+        \\    }
+        \\  ]
+        \\}
+    ;
+
+    var json_scanner = Scanner.initCompleteInput(allocator, json_source);
+    const db = try DocDatabase.loadFromJsonLeaky(allocator, &json_scanner);
+
+    // Should successfully parse method despite unknown fields
+    const entry = db.symbols.get("sin");
+    try std.testing.expect(entry != null);
+    try std.testing.expectEqualStrings("sin", entry.?.name);
+    try std.testing.expectEqual(EntryKind.global_function, entry.?.kind);
+}
+
+test "skip unknown class fields like api_type" {
+    var arena = ArenaAllocator.init(std.testing.allocator);
+    const allocator = arena.allocator();
+    defer arena.deinit();
+
+    // JSON with class containing fields beyond name/methods/brief_description
+    const json_source =
+        \\{
+        \\  "classes": [
+        \\    {
+        \\      "name": "Node2D",
+        \\      "api_type": "core",
+        \\      "inherits": "CanvasItem",
+        \\      "is_instantiable": true,
+        \\      "is_refcounted": false,
+        \\      "description": "A 2D game object.",
+        \\      "enums": []
+        \\    }
+        \\  ]
+        \\}
+    ;
+
+    var json_scanner = Scanner.initCompleteInput(allocator, json_source);
+    const db = try DocDatabase.loadFromJsonLeaky(allocator, &json_scanner);
+
+    // Should successfully parse class despite unknown fields
+    const entry = db.symbols.get("Node2D");
+    try std.testing.expect(entry != null);
+    try std.testing.expectEqualStrings("Node2D", entry.?.name);
+    try std.testing.expectEqual(EntryKind.class, entry.?.kind);
 }
 
 const std = @import("std");
