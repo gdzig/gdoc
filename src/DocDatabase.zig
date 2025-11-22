@@ -271,6 +271,27 @@ pub fn lookupSymbolExact(self: DocDatabase, symbol: []const u8) DocDatabase.Erro
     return self.symbols.get(symbol) orelse return DocDatabase.Error.SymbolNotFound;
 }
 
+fn generateMarkdownForEntry(self: DocDatabase, entry: Entry, writer: *Writer) !void {
+    try writer.print("# {s}\n", .{entry.key});
+
+    if (entry.parent_index) |parent_index| {
+        const parent = self.symbols.values()[parent_index];
+        try writer.print("\n**Parent**: {s}\n", .{parent.name});
+    }
+
+    if (entry.brief_description) |brief| {
+        try writer.print("\n{s}\n", .{brief});
+    }
+
+    if (entry.description) |desc| {
+        try writer.print("\n## Description\n\n{s}\n", .{desc});
+    }
+}
+
+pub fn generateMarkdownForSymbol(self: DocDatabase, symbol: []const u8, writer: *Writer) !void {
+    try self.generateMarkdownForEntry(self.symbols.get(symbol) orelse return error.SymbolNotFound, writer);
+}
+
 test "parse simple builtin class from JSON" {
     var arena = ArenaAllocator.init(std.testing.allocator);
     const allocator = arena.allocator();
@@ -574,6 +595,102 @@ test "skip unknown class fields like api_type" {
     try std.testing.expectEqual(EntryKind.class, entry.?.kind);
 }
 
+// RED PHASE: Tests for DocDatabase.generateMarkdownForSymbol using snapshot testing
+test "generateMarkdownForSymbol for global function" {
+    const allocator = std.testing.allocator;
+
+    var db = DocDatabase{
+        .symbols = StringArrayHashMap(Entry).empty,
+    };
+    defer db.symbols.deinit(allocator);
+
+    const entry = Entry{
+        .key = "sin",
+        .name = "sin",
+        .kind = .global_function,
+        .description = "Returns the sine of angle in radians.",
+        .signature = "float sin(float angle)",
+    };
+    try db.symbols.put(allocator, "sin", entry);
+
+    // Write snapshot
+    var file = try std.fs.cwd().createFile("snapshots/global_function.md", .{});
+    defer file.close();
+
+    var buf: [4096]u8 = undefined;
+    var file_writer = file.writer(&buf);
+    const writer = &file_writer.interface;
+
+    try db.generateMarkdownForSymbol("sin", writer);
+    try writer.flush();
+}
+
+test "generateMarkdownForSymbol for class with brief description" {
+    const allocator = std.testing.allocator;
+
+    var db = DocDatabase{
+        .symbols = StringArrayHashMap(Entry).empty,
+    };
+    defer db.symbols.deinit(allocator);
+
+    const entry = Entry{
+        .key = "Node2D",
+        .name = "Node2D",
+        .kind = .class,
+        .brief_description = "A 2D game object with position and rotation.",
+        .description = "Node2D is the base class for all 2D objects.",
+    };
+    try db.symbols.put(allocator, "Node2D", entry);
+
+    // Write snapshot
+    var file = try std.fs.cwd().createFile("snapshots/class_with_brief.md", .{});
+    defer file.close();
+
+    var buf: [4096]u8 = undefined;
+    var file_writer = file.writer(&buf);
+    const writer = &file_writer.interface;
+
+    try db.generateMarkdownForSymbol("Node2D", writer);
+    try writer.flush();
+}
+
+test "generateMarkdownForSymbol for property with parent" {
+    const allocator = std.testing.allocator;
+
+    var db = DocDatabase{
+        .symbols = StringArrayHashMap(Entry).empty,
+    };
+    defer db.symbols.deinit(allocator);
+
+    const parent = Entry{
+        .key = "Node2D",
+        .name = "Node2D",
+        .kind = .class,
+    };
+    try db.symbols.put(allocator, "Node2D", parent);
+
+    const entry = Entry{
+        .key = "Node2D.position",
+        .name = "position",
+        .parent_index = 0,
+        .kind = .property,
+        .description = "Position, relative to the node's parent.",
+        .signature = "Vector2",
+    };
+    try db.symbols.put(allocator, "Node2D.position", entry);
+
+    // Write snapshot
+    var file = try std.fs.cwd().createFile("snapshots/property_with_parent.md", .{});
+    defer file.close();
+
+    var buf: [4096]u8 = undefined;
+    var file_writer = file.writer(&buf);
+    const writer = &file_writer.interface;
+
+    try db.generateMarkdownForSymbol("Node2D.position", writer);
+    try writer.flush();
+}
+
 const std = @import("std");
 const ArenaAllocator = std.heap.ArenaAllocator;
 const Allocator = std.mem.Allocator;
@@ -583,5 +700,6 @@ const Token = std.json.Token;
 const StringArrayHashMap = std.StringArrayHashMapUnmanaged;
 const ArrayList = std.ArrayListUnmanaged;
 const File = std.fs.File;
+const Writer = std.Io.Writer;
 
 const bbcodez = @import("bbcodez");

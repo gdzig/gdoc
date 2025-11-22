@@ -77,4 +77,15 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_exe_tests.step);
+
+    // Snapshot testing: verify snapshots haven't changed unexpectedly
+    // Works with both git and jujutsu (jj with git backend)
+    const diff_check = b.addSystemCommand(&.{
+        "git",
+        "diff",
+        "--exit-code", // Fail if differences exist
+    });
+    diff_check.addDirectoryArg(b.path("snapshots/"));
+
+    test_step.dependOn(&diff_check.step);
 }
