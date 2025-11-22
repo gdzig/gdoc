@@ -179,6 +179,59 @@ pub fn getParsedCachePath(allocator: Allocator) ![]const u8 {
     return getParsedCachePathInDir(allocator, cache_dir);
 }
 
+pub fn resolveSymbolPath(allocator: Allocator, cache_path: []const u8, symbol: []const u8) ![]const u8 {
+    // dot notation
+    if (std.mem.indexOf(u8, symbol, ".")) |dot_pos| {
+        const class_name = symbol[0..dot_pos];
+        const member_name = symbol[dot_pos + 1 ..];
+
+        return std.fmt.allocPrint(
+            allocator,
+            "{f}.md",
+            .{
+                std.fs.path.fmtJoin(&.{
+                    cache_path,
+                    class_name,
+                    member_name,
+                }),
+            },
+        );
+    }
+
+    var cache_dir = try std.fs.openDirAbsolute(cache_path, .{});
+    defer cache_dir.close();
+
+    var buf: [256]u8 = undefined;
+
+    // global scope
+    const global_filename = try std.fmt.bufPrint(&buf, "{s}.md", .{symbol});
+    if (cache_dir.statFile(global_filename) catch null) |_| {
+        return std.fmt.allocPrint(
+            allocator,
+            "{f}",
+            .{
+                std.fs.path.fmtJoin(&.{
+                    cache_path,
+                    global_filename,
+                }),
+            },
+        );
+    }
+
+    // class index file
+    return std.fmt.allocPrint(
+        allocator,
+        "{f}",
+        .{
+            std.fs.path.fmtJoin(&.{
+                cache_path,
+                symbol,
+                "index.md",
+            }),
+        },
+    );
+}
+
 test "getCacheDir returns cache directory path" {
     const allocator = std.testing.allocator;
 
@@ -582,3 +635,64 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 const known_folders = @import("known-folders");
+
+// RED PHASE: Test for resolveSymbolPath function
+// This function maps symbol names to markdown file paths
+test "resolveSymbolPath handles dot notation for class members" {
+    const allocator = std.testing.allocator;
+
+    const cache_dir = "/tmp/gdoc-test";
+    const symbol = "Node2D.position";
+
+    const result = try resolveSymbolPath(allocator, cache_dir, symbol);
+    defer allocator.free(result);
+
+    // Should resolve to: cache_dir/Node2D/position.md
+    const expected = "/tmp/gdoc-test/Node2D/position.md";
+    try std.testing.expectEqualStrings(expected, result);
+}
+
+test "resolveSymbolPath handles global function as top-level file" {
+    const allocator = std.testing.allocator;
+
+    // Create a temp directory for testing
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const tmp_path = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(tmp_path);
+
+    // Create a test global function file
+    const sin_md_path = try std.fmt.allocPrint(allocator, "{s}/sin.md", .{tmp_path});
+    defer allocator.free(sin_md_path);
+
+    var file = try std.fs.createFileAbsolute(sin_md_path, .{});
+    file.close();
+
+    // Resolve symbol
+    const result = try resolveSymbolPath(allocator, tmp_path, "sin");
+    defer allocator.free(result);
+
+    // Should resolve to cache_dir/sin.md (file exists)
+    try std.testing.expectEqualStrings(sin_md_path, result);
+}
+
+test "resolveSymbolPath falls back to class index when global file not found" {
+    const allocator = std.testing.allocator;
+
+    // Create a temp directory
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const tmp_path = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(tmp_path);
+
+    // Don't create Node2D.md file, so it should try Node2D/index.md
+    const result = try resolveSymbolPath(allocator, tmp_path, "Node2D");
+    defer allocator.free(result);
+
+    const expected = try std.fmt.allocPrint(allocator, "{s}/Node2D/index.md", .{tmp_path});
+    defer allocator.free(expected);
+
+    try std.testing.expectEqualStrings(expected, result);
+}
