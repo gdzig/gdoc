@@ -32,10 +32,21 @@ fn generateCache(allocator: Allocator, godot_path: []const u8, json_path: []cons
     return CacheFile.init(&.{});
 }
 
-pub fn generateApiJson(allocator: Allocator, godot_path: []const u8, destination_dir: []const u8) !void {
+pub fn generateApiJsonIfNotExists(allocator: Allocator, godot_path: []const u8, destination_dir: []const u8) !void {
+    const json_path = try cache.getJsonCachePathInDir(allocator, destination_dir);
+    defer allocator.free(json_path);
+
+    if (std.fs.openFileAbsolute(json_path, .{}) catch |err| switch (err) {
+        error.FileNotFound => null,
+        else => return err,
+    }) |json_file| {
+        json_file.close();
+        return;
+    }
+
     const result = try Child.run(.{
         .cwd = destination_dir,
-        .argv = &[_][]const u8{ godot_path, "--dump-extension-api-with-docs" },
+        .argv = &[_][]const u8{ godot_path, "--dump-extension-api-with-docs", "--headless" },
         .allocator = allocator,
     });
     defer allocator.free(result.stdout);
@@ -81,7 +92,7 @@ test "generateApiJson executes godot and creates extension_api.json in cache" {
     file.close();
 
     // Generate the API JSON
-    try generateApiJson(allocator, fake_godot, tmp_path);
+    try generateApiJsonIfNotExists(allocator, fake_godot, tmp_path);
 
     // Verify the JSON file was created in cache directory
     const json_path = try std.fmt.allocPrint(allocator, "{s}/extension_api.json", .{tmp_path});
@@ -106,7 +117,7 @@ test "generateApiJson returns error when godot executable not found" {
     const non_existant_godot = try std.fmt.allocPrint(allocator, "{s}/godot", .{tmp_path});
     defer allocator.free(non_existant_godot);
 
-    const result = generateApiJson(allocator, non_existant_godot, "");
+    const result = generateApiJsonIfNotExists(allocator, non_existant_godot, tmp_path);
 
     try std.testing.expectError(error.FileNotFound, result);
 }
@@ -121,7 +132,7 @@ test "generateApiJson returns error on non-zero exit code" {
     defer allocator.free(tmp_path);
 
     // Use 'false' command which always exits with code 1
-    const result = generateApiJson(allocator, "false", tmp_path);
+    const result = generateApiJsonIfNotExists(allocator, "false", tmp_path);
 
     try std.testing.expectError(error.GodotExecutionFailed, result);
 }

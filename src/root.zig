@@ -9,6 +9,9 @@ pub const LookupError = error{
 } || Writer.Error || DocDatabase.Error || File.OpenError;
 
 pub fn markdownForSymbol(allocator: Allocator, symbol: []const u8, api_json_path: ?[]const u8, writer: *Writer) !void {
+    var arena = ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
     const api_json_file = if (api_json_path) |path| std.fs.cwd().openFile(path, .{}) catch |err| switch (err) {
         error.FileNotFound => return LookupError.ApiFileNotFound,
         else => return err,
@@ -16,9 +19,6 @@ pub fn markdownForSymbol(allocator: Allocator, symbol: []const u8, api_json_path
     defer if (api_json_file) |f| f.close();
 
     if (api_json_file) |f| {
-        var arena = ArenaAllocator.init(allocator);
-        defer arena.deinit();
-
         const db = try DocDatabase.loadFromJsonFileLeaky(arena.allocator(), f);
         const entry = try db.lookupSymbolExact(symbol);
 
@@ -34,6 +34,20 @@ pub fn markdownForSymbol(allocator: Allocator, symbol: []const u8, api_json_path
     } else {
         const cache_path = try cache.getCacheDir(allocator);
         defer allocator.free(cache_path);
+
+        if (!try cache.cacheIsPopulated(allocator, cache_path)) {
+            try cache.ensureDirectoryExists(cache_path);
+            try api.generateApiJsonIfNotExists(allocator, "godot", cache_path);
+
+            const json_path = try cache.getJsonCachePathInDir(allocator, cache_path);
+            defer allocator.free(json_path);
+
+            const json_file = try std.fs.openFileAbsolute(json_path, .{});
+            defer json_file.close();
+
+            const db = try DocDatabase.loadFromJsonFileLeaky(arena.allocator(), json_file);
+            try cache.generateMarkdownCache(allocator, db, cache_path);
+        }
 
         try cache.readSymbolMarkdown(allocator, symbol, cache_path, writer);
     }
@@ -290,8 +304,7 @@ test "formatAndDisplay with terminal format produces terminal output" {
     try std.testing.expect(std.mem.indexOf(u8, written, "TestClass") != null);
 }
 
-// RED PHASE: Test for markdown cache integration
-// This test verifies the normal cache flow when api_json_path is null
+// Test verifies the normal cache flow when api_json_path is null
 test "markdownForSymbol reads from markdown cache when available" {
     const allocator = std.testing.allocator;
 
@@ -326,6 +339,53 @@ test "markdownForSymbol reads from markdown cache when available" {
 
     // Verify it used the cached markdown
     try std.testing.expect(std.mem.indexOf(u8, written, "cached test class from markdown cache") != null);
+
+    // Cleanup
+    cache.clearCache(allocator) catch {};
+}
+
+// RED PHASE: Test for automatic cache population
+// This test verifies that markdownForSymbol auto-generates the cache when empty
+test "markdownForSymbol generates markdown cache when cache is empty" {
+    const allocator = std.testing.allocator;
+
+    // Get the actual cache directory
+    const cache_dir = try cache.getCacheDir(allocator);
+    defer allocator.free(cache_dir);
+
+    // Clear cache to start empty
+    cache.clearCache(allocator) catch {};
+
+    // Ensure cache directory exists
+    try cache.ensureDirectoryExists(cache_dir);
+
+    // Create a JSON file in the cache directory
+    const json_path = try cache.getJsonCachePathInDir(allocator, cache_dir);
+    defer allocator.free(json_path);
+
+    const test_json =
+        \\{"builtin_classes": [{"name": "AutoGenClass", "brief_description": "Auto-generated from empty cache"}]}
+    ;
+    try std.fs.cwd().writeFile(.{ .sub_path = json_path, .data = test_json });
+
+    var allocating_writer = std.Io.Writer.Allocating.init(allocator);
+    defer allocating_writer.deinit();
+
+    // Call markdownForSymbol with null api_json_path
+    // Should auto-generate cache and return the symbol
+    try markdownForSymbol(allocator, "AutoGenClass", null, &allocating_writer.writer);
+
+    const written = allocating_writer.written();
+
+    // Verify it generated markdown for the symbol
+    try std.testing.expect(std.mem.indexOf(u8, written, "AutoGenClass") != null);
+
+    // Verify the cache was actually created
+    const autogen_path = try std.fmt.allocPrint(allocator, "{s}/AutoGenClass/index.md", .{cache_dir});
+    defer allocator.free(autogen_path);
+
+    const cache_file = try std.fs.openFileAbsolute(autogen_path, .{});
+    cache_file.close();
 
     // Cleanup
     cache.clearCache(allocator) catch {};

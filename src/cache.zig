@@ -258,6 +258,28 @@ pub fn generateMarkdownCache(allocator: Allocator, db: DocDatabase, cache_path: 
     }
 }
 
+pub fn cacheIsPopulated(allocator: Allocator, cache_path: []const u8) !bool {
+    const json_file_path = try getJsonCachePathInDir(allocator, cache_path);
+    defer allocator.free(json_file_path);
+
+    const json_file = std.fs.openFileAbsolute(json_file_path, .{}) catch |err| switch (err) {
+        error.FileNotFound => return false,
+        else => return err,
+    };
+    defer json_file.close();
+
+    const node_path = try resolveSymbolPath(allocator, cache_path, "Node");
+    defer allocator.free(node_path);
+
+    const node_file = std.fs.openFileAbsolute(node_path, .{}) catch |err| switch (err) {
+        error.FileNotFound => return false,
+        else => return err,
+    };
+    defer node_file.close();
+
+    return true;
+}
+
 test "getCacheDir returns cache directory path" {
     const allocator = std.testing.allocator;
 
@@ -1045,6 +1067,85 @@ test "readSymbolMarkdown reads global function file" {
     try readSymbolMarkdown(allocator, "sin", cache_dir, &allocating.writer);
 
     try std.testing.expectEqualStrings(content, allocating.written());
+}
+
+// RED PHASE: Tests for cacheIsPopulated helper function
+test "cacheIsPopulated returns false for empty directory" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const cache_dir = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(cache_dir);
+
+    // Empty directory - should return false
+    const result = try cacheIsPopulated(allocator, cache_dir);
+    try std.testing.expect(!result);
+}
+
+test "cacheIsPopulated returns false for nonexistent directory" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const tmp_path = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(tmp_path);
+
+    const nonexistent = try std.fmt.allocPrint(allocator, "{s}/nonexistent", .{tmp_path});
+    defer allocator.free(nonexistent);
+
+    // Nonexistent directory - should return false
+    const result = try cacheIsPopulated(allocator, nonexistent);
+    try std.testing.expect(!result);
+}
+
+test "cacheIsPopulated returns true when cache has markdown files" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const cache_dir = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(cache_dir);
+
+    // Create the JSON file (required by implementation)
+    const json_path = try getJsonCachePathInDir(allocator, cache_dir);
+    defer allocator.free(json_path);
+    try std.fs.cwd().writeFile(.{ .sub_path = json_path, .data = "{}" });
+
+    // Create Node symbol directory with markdown file
+    const node_dir = try std.fmt.allocPrint(allocator, "{s}/Node", .{cache_dir});
+    defer allocator.free(node_dir);
+    try std.fs.makeDirAbsolute(node_dir);
+
+    const index_path = try std.fmt.allocPrint(allocator, "{s}/index.md", .{node_dir});
+    defer allocator.free(index_path);
+    try std.fs.cwd().writeFile(.{ .sub_path = index_path, .data = "# Node\n" });
+
+    // Should return true since cache has both JSON and markdown files
+    const result = try cacheIsPopulated(allocator, cache_dir);
+    try std.testing.expect(result);
+}
+
+test "cacheIsPopulated returns false when only extension_api.json exists" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const cache_dir = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(cache_dir);
+
+    // Create only the JSON file, no markdown files
+    const json_path = try std.fmt.allocPrint(allocator, "{s}/extension_api.json", .{cache_dir});
+    defer allocator.free(json_path);
+    try std.fs.cwd().writeFile(.{ .sub_path = json_path, .data = "{}" });
+
+    // Should return false - JSON alone doesn't mean cache is populated
+    const result = try cacheIsPopulated(allocator, cache_dir);
+    try std.testing.expect(!result);
 }
 
 const std = @import("std");
