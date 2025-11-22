@@ -25,6 +25,13 @@ pub fn build(allocator: Allocator, writer: *Writer, reader: *Reader) !*Command {
         .default_value = .{ .String = "" },
     });
 
+    try root.addFlag(.{
+        .name = "output-format",
+        .description = "Output format (markdown or terminal). Defaults to terminal for TTY, markdown otherwise.",
+        .type = .String,
+        .default_value = .{ .String = "detect" },
+    });
+
     try root.addPositionalArg(.{
         .name = "symbol",
         .description = "Symbol to look up. (E.g. Node2D, Node2D.position)",
@@ -36,8 +43,12 @@ pub fn build(allocator: Allocator, writer: *Writer, reader: *Reader) !*Command {
 
 fn runLookup(ctx: CommandContext) !void {
     const clear_cache = ctx.flag("clear-cache", bool);
+
     const api_json_path_raw = ctx.flag("godot-extension-api", []const u8);
     const api_json_path: ?[]const u8 = if (api_json_path_raw.len == 0) null else api_json_path_raw;
+
+    const output_format_raw = ctx.flag("output-format", []const u8);
+    const output_format: OutputFormat = std.meta.stringToEnum(OutputFormat, output_format_raw) orelse .detect;
 
     // print help when no arguments/flags are provided
     if (!clear_cache and ctx.positional_args.len == 0 and api_json_path == null) {
@@ -52,7 +63,7 @@ fn runLookup(ctx: CommandContext) !void {
 
     const symbol = ctx.getArg("symbol") orelse return;
 
-    gdoc.lookupAndDisplay(ctx.allocator, symbol, api_json_path, ctx.writer) catch |err| switch (err) {
+    gdoc.formatAndDisplay(ctx.allocator, symbol, api_json_path, ctx.writer, output_format) catch |err| switch (err) {
         DocDatabaseError.SymbolNotFound => try ctx.writer.print("Symbol '{s}' not found.\n", .{symbol}),
         error.ApiFileNotFound => try ctx.writer.print("Error: API file not found: {s}\n", .{api_json_path.?}),
         error.InvalidApiJson => try ctx.writer.print("Error: Invalid JSON in API file: {s}\n", .{api_json_path.?}),
@@ -64,6 +75,7 @@ fn runLookup(ctx: CommandContext) !void {
 
 const gdoc = @import("gdoc");
 const DocDatabaseError = gdoc.DocDatabase.Error;
+const OutputFormat = gdoc.OutputFormat;
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;

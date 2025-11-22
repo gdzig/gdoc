@@ -457,13 +457,13 @@ test "convert BBCode description to Markdown" {
 
     const entry = db.symbols.get("Node2D");
     try std.testing.expect(entry != null);
-    try std.testing.expect(entry.?.description != null);
+    try std.testing.expect(entry.?.brief_description != null);
 
     // BBCode should be converted to Markdown
     // [b]text[/b] -> **text**
     // [i]text[/i] -> *text*
     const expected = "A 2D game object with **position** and *rotation*.";
-    try std.testing.expectEqualStrings(expected, entry.?.description.?);
+    try std.testing.expectEqualStrings(expected, entry.?.brief_description.?);
 }
 
 test "skip unknown root-level keys like header" {

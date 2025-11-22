@@ -31,6 +31,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "bbcodez", .module = bbcodez },
             .{ .name = "known-folders", .module = known_folders },
+            .{ .name = "zigdown", .module = zigdown },
         },
     });
     mod.addOptions("build_options", build_options);
@@ -44,7 +45,6 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "gdoc", .module = mod },
                 .{ .name = "zli", .module = zli },
-                .{ .name = "zigdown", .module = zigdown },
             },
         }),
     });
