@@ -146,6 +146,7 @@ fn parseClass(allocator: Allocator, scanner: *Scanner, kind: EntryKind, db: *Doc
     };
 
     var method_entries: ArrayList(Entry) = .empty;
+    defer method_entries.deinit(allocator);
 
     while (true) {
         const token = try scanner.next();
