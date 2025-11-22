@@ -26,6 +26,7 @@ pub const Entry = struct {
     parent_index: ?usize = null,
     kind: EntryKind,
     description: ?[]const u8 = null,
+    brief_description: ?[]const u8 = null,
     signature: ?[]const u8 = null,
     members: ?[]usize = null,
 };
@@ -122,6 +123,7 @@ fn parseClasses(comptime kind: EntryKind, allocator: Allocator, scanner: *Scanne
 const ClassKey = enum {
     name,
     methods,
+    description,
     brief_description,
 };
 
@@ -179,16 +181,8 @@ fn parseClass(allocator: Allocator, scanner: *Scanner, kind: EntryKind, db: *Doc
                             }
                         }
                     },
-                    .brief_description => {
-                        const brief_description = try scanner.nextAlloc(allocator, .alloc_if_needed);
-
-                        const value = switch (brief_description) {
-                            inline .string, .allocated_string => |str| str,
-                            else => unreachable,
-                        };
-
-                        entry.description = try bbcodeToMarkdown(allocator, value);
-                    },
+                    .brief_description => entry.brief_description = try nextTokenToMarkdownAlloc(allocator, scanner),
+                    .description => entry.description = try nextTokenToMarkdownAlloc(allocator, scanner),
                 }
             },
             .object_end => break,
@@ -215,6 +209,17 @@ fn parseClass(allocator: Allocator, scanner: *Scanner, kind: EntryKind, db: *Doc
         const method_index = db.symbols.getIndex(method_entry.key).?;
         member_indices[i] = method_index;
     }
+}
+
+fn nextTokenToMarkdownAlloc(allocator: Allocator, scanner: *Scanner) ![]const u8 {
+    const token = try scanner.nextAlloc(allocator, .alloc_if_needed);
+
+    const value = switch (token) {
+        inline .string, .allocated_string => |str| str,
+        else => unreachable,
+    };
+
+    return try bbcodeToMarkdown(allocator, value);
 }
 
 const MethodKey = enum {

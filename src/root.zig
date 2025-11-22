@@ -18,8 +18,12 @@ pub fn lookupAndDisplay(allocator: Allocator, symbol: []const u8, api_json_path:
 
         try writer.print("# {s}\n", .{symbol});
 
+        if (entry.brief_description) |brief| {
+            try writer.print("\n{s}\n", .{brief});
+        }
+
         if (entry.description) |desc| {
-            try writer.print("\n{s}\n", .{desc});
+            try writer.print("\n## Description\n\n{s}\n", .{desc});
         }
     }
 }
