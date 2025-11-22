@@ -220,11 +220,9 @@ pub fn writeSymbolMarkdown(allocator: Allocator, db: DocDatabase, symbol: []cons
     defer allocator.free(output_file_path);
 
     const output_dir_path = std.fs.path.dirname(output_file_path).?;
+    try ensureDirectoryExists(output_dir_path);
 
-    var output_dir = try std.fs.cwd().makeOpenPath(output_dir_path, .{});
-    defer output_dir.close();
-
-    var output_file = try output_dir.createFile(std.fs.path.basename(output_file_path), .{});
+    var output_file = try std.fs.cwd().createFile(output_file_path, .{});
     defer output_file.close();
 
     var buf: [4096]u8 = undefined;
@@ -233,6 +231,31 @@ pub fn writeSymbolMarkdown(allocator: Allocator, db: DocDatabase, symbol: []cons
 
     try db.generateMarkdownForSymbol(symbol, writer);
     try writer.flush();
+}
+
+pub fn readSymbolMarkdown(allocator: Allocator, symbol: []const u8, cache_path: []const u8, output: *Writer) !void {
+    const symbol_path = try resolveSymbolPath(allocator, cache_path, symbol);
+    defer allocator.free(symbol_path);
+
+    const symbol_file = std.fs.openFileAbsolute(symbol_path, .{}) catch |err| switch (err) {
+        error.FileNotFound => return error.SymbolNotFound,
+        else => return err,
+    };
+    defer symbol_file.close();
+
+    var buf: [4096]u8 = undefined;
+    var file_reader = symbol_file.reader(&buf);
+    var reader = &file_reader.interface;
+
+    _ = try reader.stream(output, .unlimited);
+}
+
+pub fn generateMarkdownCache(allocator: Allocator, db: DocDatabase, cache_path: []const u8) !void {
+    try ensureDirectoryExists(cache_path);
+
+    for (db.symbols.values()) |entry| {
+        try writeSymbolMarkdown(allocator, db, entry.key, cache_path);
+    }
 }
 
 test "getCacheDir returns cache directory path" {
@@ -634,12 +657,6 @@ test "clearCache succeeds when cache directory does not exist" {
     try clearCache(allocator);
 }
 
-const std = @import("std");
-const Allocator = std.mem.Allocator;
-
-const known_folders = @import("known-folders");
-const DocDatabase = @import("DocDatabase.zig");
-
 // RED PHASE: Test for resolveSymbolPath function
 // This function maps symbol names to markdown file paths
 test "resolveSymbolPath handles dot notation for class members" {
@@ -831,3 +848,208 @@ test "writeSymbolMarkdown writes class to index.md in subdirectory" {
     try std.testing.expect(std.mem.indexOf(u8, content, "# Node3D") != null);
     try std.testing.expect(std.mem.indexOf(u8, content, "3D scene node.") != null);
 }
+
+// RED PHASE: Test for generateMarkdownCache
+// This function should write markdown files for ALL symbols in the database
+test "generateMarkdownCache writes all symbols to cache directory" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const cache_dir = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(cache_dir);
+
+    // Create a database with multiple symbols
+    var db = DocDatabase{
+        .symbols = std.StringArrayHashMapUnmanaged(DocDatabase.Entry).empty,
+    };
+    defer db.symbols.deinit(allocator);
+
+    // Add a global function
+    try db.symbols.put(allocator, "abs", DocDatabase.Entry{
+        .key = "abs",
+        .name = "abs",
+        .kind = .global_function,
+        .description = "Returns absolute value.",
+    });
+
+    // Add a class
+    try db.symbols.put(allocator, "Vector2", DocDatabase.Entry{
+        .key = "Vector2",
+        .name = "Vector2",
+        .kind = .class,
+        .brief_description = "2D vector.",
+    });
+
+    // Add a class member
+    try db.symbols.put(allocator, "Vector2.x", DocDatabase.Entry{
+        .key = "Vector2.x",
+        .name = "x",
+        .parent_index = 1, // Index of Vector2
+        .kind = .property,
+        .description = "X coordinate.",
+    });
+
+    // Generate all markdown files
+    try generateMarkdownCache(allocator, db, cache_dir);
+
+    // Verify all files were created
+    const abs_path = try std.fmt.allocPrint(allocator, "{s}/abs/index.md", .{cache_dir});
+    defer allocator.free(abs_path);
+    _ = try std.fs.openFileAbsolute(abs_path, .{});
+
+    const vec2_path = try std.fmt.allocPrint(allocator, "{s}/Vector2/index.md", .{cache_dir});
+    defer allocator.free(vec2_path);
+    _ = try std.fs.openFileAbsolute(vec2_path, .{});
+
+    const x_path = try std.fmt.allocPrint(allocator, "{s}/Vector2/x.md", .{cache_dir});
+    defer allocator.free(x_path);
+    _ = try std.fs.openFileAbsolute(x_path, .{});
+}
+
+test "generateMarkdownCache handles empty database" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const cache_dir = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(cache_dir);
+
+    // Create an empty database
+    var db = DocDatabase{
+        .symbols = std.StringArrayHashMapUnmanaged(DocDatabase.Entry).empty,
+    };
+    defer db.symbols.deinit(allocator);
+
+    // Should not error with empty database
+    try generateMarkdownCache(allocator, db, cache_dir);
+
+    // Cache directory should exist but be empty (except for . and ..)
+    var dir = try std.fs.openDirAbsolute(cache_dir, .{ .iterate = true });
+    defer dir.close();
+
+    var iter = dir.iterate();
+    const first = try iter.next();
+    // Empty or only has . and .. entries
+    if (first) |entry| {
+        try std.testing.expect(
+            std.mem.eql(u8, entry.name, ".") or
+                std.mem.eql(u8, entry.name, ".."),
+        );
+    }
+}
+
+// RED PHASE: Tests for readSymbolMarkdown
+// This function should read markdown content from cache files
+test "readSymbolMarkdown reads class index file" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const cache_dir = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(cache_dir);
+
+    // Create a class index file
+    const node2d_dir = try std.fmt.allocPrint(allocator, "{s}/Node2D", .{cache_dir});
+    defer allocator.free(node2d_dir);
+    try std.fs.makeDirAbsolute(node2d_dir);
+
+    const index_path = try std.fmt.allocPrint(allocator, "{s}/index.md", .{node2d_dir});
+    defer allocator.free(index_path);
+
+    const content = "# Node2D\n\nA 2D scene node.\n";
+    try std.fs.cwd().writeFile(.{ .sub_path = index_path, .data = content });
+
+    var allocating: Writer.Allocating = .init(allocator);
+    defer allocating.deinit();
+
+    // Read the symbol
+    try readSymbolMarkdown(allocator, "Node2D", cache_dir, &allocating.writer);
+
+    try std.testing.expectEqualStrings(content, allocating.written());
+}
+
+test "readSymbolMarkdown reads member file with dot notation" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const cache_dir = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(cache_dir);
+
+    // Create a member file
+    const vector2_dir = try std.fmt.allocPrint(allocator, "{s}/Vector2", .{cache_dir});
+    defer allocator.free(vector2_dir);
+    try std.fs.makeDirAbsolute(vector2_dir);
+
+    const x_path = try std.fmt.allocPrint(allocator, "{s}/x.md", .{vector2_dir});
+    defer allocator.free(x_path);
+
+    const content = "# Vector2.x\n\n**Parent**: Vector2\n\nThe X coordinate.\n";
+    try std.fs.cwd().writeFile(.{ .sub_path = x_path, .data = content });
+
+    var allocating: Writer.Allocating = .init(allocator);
+    defer allocating.deinit();
+
+    // Read the symbol
+    try readSymbolMarkdown(allocator, "Vector2.x", cache_dir, &allocating.writer);
+
+    try std.testing.expectEqualStrings(content, allocating.written());
+}
+
+test "readSymbolMarkdown returns error for nonexistent symbol" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const cache_dir = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(cache_dir);
+
+    var allocating: Writer.Allocating = .init(allocator);
+    defer allocating.deinit();
+
+    // Try to read a symbol that doesn't exist
+    const result = readSymbolMarkdown(allocator, "NonExistent", cache_dir, &allocating.writer);
+    try std.testing.expectError(error.SymbolNotFound, result);
+}
+
+test "readSymbolMarkdown reads global function file" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const cache_dir = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(cache_dir);
+
+    // Create a global function file
+    const sin_dir = try std.fmt.allocPrint(allocator, "{s}/sin", .{cache_dir});
+    defer allocator.free(sin_dir);
+    try std.fs.makeDirAbsolute(sin_dir);
+
+    const sin_path = try std.fmt.allocPrint(allocator, "{s}/index.md", .{sin_dir});
+    defer allocator.free(sin_path);
+
+    const content = "# sin\n\n**Type**: global_function\n\nReturns sine of angle.\n";
+    try std.fs.cwd().writeFile(.{ .sub_path = sin_path, .data = content });
+
+    var allocating: Writer.Allocating = .init(allocator);
+    defer allocating.deinit();
+
+    // Read the symbol
+    try readSymbolMarkdown(allocator, "sin", cache_dir, &allocating.writer);
+
+    try std.testing.expectEqualStrings(content, allocating.written());
+}
+
+const std = @import("std");
+const Allocator = std.mem.Allocator;
+const Writer = std.Io.Writer;
+
+const known_folders = @import("known-folders");
+const DocDatabase = @import("DocDatabase.zig");
