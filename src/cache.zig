@@ -201,23 +201,6 @@ pub fn resolveSymbolPath(allocator: Allocator, cache_path: []const u8, symbol: [
     var cache_dir = try std.fs.openDirAbsolute(cache_path, .{});
     defer cache_dir.close();
 
-    var buf: [256]u8 = undefined;
-
-    // global scope
-    const global_filename = try std.fmt.bufPrint(&buf, "{s}.md", .{symbol});
-    if (cache_dir.statFile(global_filename) catch null) |_| {
-        return std.fmt.allocPrint(
-            allocator,
-            "{f}",
-            .{
-                std.fs.path.fmtJoin(&.{
-                    cache_path,
-                    global_filename,
-                }),
-            },
-        );
-    }
-
     // class index file
     return std.fmt.allocPrint(
         allocator,
@@ -230,6 +213,26 @@ pub fn resolveSymbolPath(allocator: Allocator, cache_path: []const u8, symbol: [
             }),
         },
     );
+}
+
+pub fn writeSymbolMarkdown(allocator: Allocator, db: DocDatabase, symbol: []const u8, cache_path: []const u8) !void {
+    const output_file_path = try resolveSymbolPath(allocator, cache_path, symbol);
+    defer allocator.free(output_file_path);
+
+    const output_dir_path = std.fs.path.dirname(output_file_path).?;
+
+    var output_dir = try std.fs.cwd().makeOpenPath(output_dir_path, .{});
+    defer output_dir.close();
+
+    var output_file = try output_dir.createFile(std.fs.path.basename(output_file_path), .{});
+    defer output_file.close();
+
+    var buf: [4096]u8 = undefined;
+    var file_writer = output_file.writer(&buf);
+    var writer = &file_writer.interface;
+
+    try db.generateMarkdownForSymbol(symbol, writer);
+    try writer.flush();
 }
 
 test "getCacheDir returns cache directory path" {
@@ -635,6 +638,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 const known_folders = @import("known-folders");
+const DocDatabase = @import("DocDatabase.zig");
 
 // RED PHASE: Test for resolveSymbolPath function
 // This function maps symbol names to markdown file paths
@@ -663,11 +667,8 @@ test "resolveSymbolPath handles global function as top-level file" {
     defer allocator.free(tmp_path);
 
     // Create a test global function file
-    const sin_md_path = try std.fmt.allocPrint(allocator, "{s}/sin.md", .{tmp_path});
+    const sin_md_path = try std.fmt.allocPrint(allocator, "{s}/sin/index.md", .{tmp_path});
     defer allocator.free(sin_md_path);
-
-    var file = try std.fs.createFileAbsolute(sin_md_path, .{});
-    file.close();
 
     // Resolve symbol
     const result = try resolveSymbolPath(allocator, tmp_path, "sin");
@@ -695,4 +696,138 @@ test "resolveSymbolPath falls back to class index when global file not found" {
     defer allocator.free(expected);
 
     try std.testing.expectEqualStrings(expected, result);
+}
+
+// RED PHASE: Tests for writeSymbolMarkdown
+test "writeSymbolMarkdown writes global function to top-level file" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const cache_dir = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(cache_dir);
+
+    // Create a database with a global function
+    var db = DocDatabase{
+        .symbols = std.StringArrayHashMapUnmanaged(DocDatabase.Entry).empty,
+    };
+    defer db.symbols.deinit(allocator);
+
+    const entry = DocDatabase.Entry{
+        .key = "abs",
+        .name = "abs",
+        .kind = .global_function,
+        .description = "Returns absolute value.",
+        .signature = "float abs(float x)",
+    };
+    try db.symbols.put(allocator, "abs", entry);
+
+    // Write the symbol markdown
+    try writeSymbolMarkdown(allocator, db, "abs", cache_dir);
+
+    // Verify file was created at correct path
+    const expected_path = try std.fmt.allocPrint(allocator, "{s}/abs/index.md", .{cache_dir});
+    defer allocator.free(expected_path);
+
+    const file = try std.fs.openFileAbsolute(expected_path, .{});
+    defer file.close();
+
+    const content = try file.readToEndAlloc(allocator, 1024 * 1024);
+    defer allocator.free(content);
+
+    // Verify content contains expected markdown
+    try std.testing.expect(std.mem.indexOf(u8, content, "# abs") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "Returns absolute value.") != null);
+}
+
+test "writeSymbolMarkdown writes class member with parent directory creation" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const cache_dir = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(cache_dir);
+
+    // Create a database with a class and member
+    var db = DocDatabase{
+        .symbols = std.StringArrayHashMapUnmanaged(DocDatabase.Entry).empty,
+    };
+    defer db.symbols.deinit(allocator);
+
+    const parent = DocDatabase.Entry{
+        .key = "Vector2",
+        .name = "Vector2",
+        .kind = .class,
+    };
+    try db.symbols.put(allocator, "Vector2", parent);
+
+    const entry = DocDatabase.Entry{
+        .key = "Vector2.x",
+        .name = "x",
+        .parent_index = 0,
+        .kind = .property,
+        .description = "The X coordinate.",
+        .signature = "float",
+    };
+    try db.symbols.put(allocator, "Vector2.x", entry);
+
+    // Write the symbol markdown
+    try writeSymbolMarkdown(allocator, db, "Vector2.x", cache_dir);
+
+    // Verify file was created at correct path with parent directory
+    const expected_path = try std.fmt.allocPrint(allocator, "{s}/Vector2/x.md", .{cache_dir});
+    defer allocator.free(expected_path);
+
+    const file = try std.fs.openFileAbsolute(expected_path, .{});
+    defer file.close();
+
+    const content = try file.readToEndAlloc(allocator, 1024 * 1024);
+    defer allocator.free(content);
+
+    // Verify content
+    try std.testing.expect(std.mem.indexOf(u8, content, "# Vector2.x") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "**Parent**: Vector2") != null);
+}
+
+test "writeSymbolMarkdown writes class to index.md in subdirectory" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const cache_dir = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(cache_dir);
+
+    // Create a database with a class
+    var db = DocDatabase{
+        .symbols = std.StringArrayHashMapUnmanaged(DocDatabase.Entry).empty,
+    };
+    defer db.symbols.deinit(allocator);
+
+    const entry = DocDatabase.Entry{
+        .key = "Node3D",
+        .name = "Node3D",
+        .kind = .class,
+        .brief_description = "3D scene node.",
+    };
+    try db.symbols.put(allocator, "Node3D", entry);
+
+    // Write the symbol markdown
+    try writeSymbolMarkdown(allocator, db, "Node3D", cache_dir);
+
+    // Verify file was created at Node3D/index.md
+    const expected_path = try std.fmt.allocPrint(allocator, "{s}/Node3D/index.md", .{cache_dir});
+    defer allocator.free(expected_path);
+
+    const file = try std.fs.openFileAbsolute(expected_path, .{});
+    defer file.close();
+
+    const content = try file.readToEndAlloc(allocator, 1024 * 1024);
+    defer allocator.free(content);
+
+    // Verify content
+    try std.testing.expect(std.mem.indexOf(u8, content, "# Node3D") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "3D scene node.") != null);
 }
