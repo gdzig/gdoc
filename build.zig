@@ -20,6 +20,11 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     }).module("zli");
 
+    const zigdown = b.dependency("zigdown", .{
+        .target = target,
+        .optimize = optimize,
+    }).module("zigdown");
+
     const mod = b.addModule("gdoc", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
@@ -39,6 +44,7 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "gdoc", .module = mod },
                 .{ .name = "zli", .module = zli },
+                .{ .name = "zigdown", .module = zigdown },
             },
         }),
     });
