@@ -31,6 +31,11 @@ pub fn markdownForSymbol(allocator: Allocator, symbol: []const u8, api_json_path
         if (entry.description) |desc| {
             try writer.print("\n## Description\n\n{s}\n", .{desc});
         }
+    } else {
+        const cache_path = try cache.getCacheDir(allocator);
+        defer allocator.free(cache_path);
+
+        try cache.readSymbolMarkdown(allocator, symbol, cache_path, writer);
     }
 }
 
@@ -283,6 +288,47 @@ test "formatAndDisplay with terminal format produces terminal output" {
     // Verify terminal output was produced (should still contain the symbol name)
     try std.testing.expect(written.len > 0);
     try std.testing.expect(std.mem.indexOf(u8, written, "TestClass") != null);
+}
+
+// RED PHASE: Test for markdown cache integration
+// This test verifies the normal cache flow when api_json_path is null
+test "markdownForSymbol reads from markdown cache when available" {
+    const allocator = std.testing.allocator;
+
+    // Get the actual cache directory
+    const cache_dir = try cache.getCacheDir(allocator);
+    defer allocator.free(cache_dir);
+
+    // Clear any existing cache to start fresh
+    cache.clearCache(allocator) catch {};
+
+    // Ensure cache directory exists
+    try cache.ensureDirectoryExists(cache_dir);
+
+    // Pre-populate cache with a markdown file for TestCachedClass
+    const testclass_dir = try std.fmt.allocPrint(allocator, "{s}/TestCachedClass", .{cache_dir});
+    defer allocator.free(testclass_dir);
+    try std.fs.makeDirAbsolute(testclass_dir);
+
+    const index_path = try std.fmt.allocPrint(allocator, "{s}/index.md", .{testclass_dir});
+    defer allocator.free(index_path);
+
+    const cached_markdown = "# TestCachedClass\n\nA cached test class from markdown cache.\n";
+    try std.fs.cwd().writeFile(.{ .sub_path = index_path, .data = cached_markdown });
+
+    var allocating_writer = std.Io.Writer.Allocating.init(allocator);
+    defer allocating_writer.deinit();
+
+    // Call markdownForSymbol with null api_json_path - should use cache
+    try markdownForSymbol(allocator, "TestCachedClass", null, &allocating_writer.writer);
+
+    const written = allocating_writer.written();
+
+    // Verify it used the cached markdown
+    try std.testing.expect(std.mem.indexOf(u8, written, "cached test class from markdown cache") != null);
+
+    // Cleanup
+    cache.clearCache(allocator) catch {};
 }
 
 comptime {
