@@ -66,7 +66,12 @@ pub fn loadFromJsonLeaky(gpa: Allocator, scanner: *Scanner) !DocDatabase {
         switch (token) {
             .string => |s| {
                 std.debug.assert(scanner.string_is_object_key);
-                switch (std.meta.stringToEnum(RootState, s) orelse continue) {
+                const state = std.meta.stringToEnum(RootState, s) orelse {
+                    try scanner.skipValue();
+                    continue;
+                };
+
+                switch (state) {
                     .builtin_classes => try parseClasses(.builtin_class, gpa, scanner, &db),
                     .classes => try parseClasses(.class, gpa, scanner, &db),
                     .utility_functions => try parseGlobalMethods(gpa, scanner, &db),
@@ -441,6 +446,51 @@ test "convert BBCode description to Markdown" {
     // [i]text[/i] -> *text*
     const expected = "A 2D game object with **position** and *rotation*.";
     try std.testing.expectEqualStrings(expected, entry.?.description.?);
+}
+
+test "skip unknown root-level keys like header" {
+    var arena = ArenaAllocator.init(std.testing.allocator);
+    const allocator = arena.allocator();
+    defer arena.deinit();
+
+    // JSON with all unknown root-level keys that should be skipped
+    const json_source =
+        \\{
+        \\  "header": {
+        \\    "version_major": 4,
+        \\    "version_minor": 5
+        \\  },
+        \\  "builtin_class_sizes": [
+        \\    {
+        \\      "build_configuration": "float_32",
+        \\      "sizes": [
+        \\        {
+        \\          "name": "bool",
+        \\          "size": 1
+        \\        }
+        \\      ]
+        \\    }
+        \\  ],
+        \\  "builtin_class_member_offsets": [],
+        \\  "global_constants": [],
+        \\  "global_enums": [],
+        \\  "native_structures": [],
+        \\  "singletons": [],
+        \\  "classes": [
+        \\    {
+        \\      "name": "Node2D"
+        \\    }
+        \\  ]
+        \\}
+    ;
+
+    var json_scanner = Scanner.initCompleteInput(allocator, json_source);
+    const db = try DocDatabase.loadFromJsonLeaky(allocator, &json_scanner);
+
+    // Should successfully parse despite unknown keys
+    const entry = db.symbols.get("Node2D");
+    try std.testing.expect(entry != null);
+    try std.testing.expectEqualStrings("Node2D", entry.?.name);
 }
 
 const std = @import("std");
