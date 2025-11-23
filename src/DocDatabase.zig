@@ -1,7 +1,5 @@
 const DocDatabase = @This();
 
-const empty = DocDatabase{};
-
 symbols: StringArrayHashMap(Entry) = .empty,
 
 pub const Error = error{
@@ -18,6 +16,8 @@ pub const EntryKind = enum {
     enum_value,
     global_function,
     operator,
+    signal,
+    @"enum",
 };
 
 pub const Entry = struct {
@@ -60,7 +60,7 @@ pub fn loadFromJsonFileLeaky(gpa: Allocator, file: File) !DocDatabase {
 }
 
 pub fn loadFromJsonLeaky(gpa: Allocator, scanner: *Scanner) !DocDatabase {
-    var db = empty;
+    var db = DocDatabase{};
 
     while (true) {
         const token = try scanner.next();
@@ -272,7 +272,7 @@ pub fn lookupSymbolExact(self: DocDatabase, symbol: []const u8) DocDatabase.Erro
     return self.symbols.get(symbol) orelse return DocDatabase.Error.SymbolNotFound;
 }
 
-fn generateMarkdownForEntry(self: DocDatabase, entry: Entry, writer: *Writer) !void {
+fn generateMarkdownForEntry(self: DocDatabase, allocator: Allocator, entry: Entry, writer: *Writer) !void {
     try writer.print("# {s}\n", .{entry.key});
 
     if (entry.parent_index) |parent_index| {
@@ -287,10 +287,73 @@ fn generateMarkdownForEntry(self: DocDatabase, entry: Entry, writer: *Writer) !v
     if (entry.description) |desc| {
         try writer.print("\n## Description\n\n{s}\n", .{desc});
     }
+
+    if (entry.members) |member_indices| {
+        try self.generateMemberListings(allocator, member_indices, writer);
+    }
 }
 
-pub fn generateMarkdownForSymbol(self: DocDatabase, symbol: []const u8, writer: *Writer) !void {
-    try self.generateMarkdownForEntry(self.symbols.get(symbol) orelse return error.SymbolNotFound, writer);
+fn generateMemberListings(self: DocDatabase, allocator: Allocator, member_indices: []usize, writer: *Writer) !void {
+    var properties: ArrayList(usize) = .empty;
+    var methods: ArrayList(usize) = .empty;
+    var signals: ArrayList(usize) = .empty;
+    var constants: ArrayList(usize) = .empty;
+    var enums: ArrayList(usize) = .empty;
+
+    defer properties.deinit(allocator);
+    defer methods.deinit(allocator);
+    defer signals.deinit(allocator);
+    defer constants.deinit(allocator);
+    defer enums.deinit(allocator);
+
+    for (member_indices) |idx| {
+        const member: Entry = self.symbols.values()[idx];
+        switch (member.kind) {
+            .property => try properties.append(allocator, idx),
+            .method => try methods.append(allocator, idx),
+            .signal => try signals.append(allocator, idx),
+            .constant => try constants.append(allocator, idx),
+            .@"enum" => try enums.append(allocator, idx),
+            else => continue,
+        }
+    }
+
+    try self.formatMemberSection("Properties", properties.items, writer);
+    try self.formatMemberSection("Methods", methods.items, writer);
+    try self.formatMemberSection("Signals", signals.items, writer);
+    try self.formatMemberSection("Constants", constants.items, writer);
+    try self.formatMemberSection("Enums", enums.items, writer);
+}
+
+fn formatMemberSection(self: DocDatabase, section_name: []const u8, member_indices: []usize, writer: *Writer) !void {
+    if (member_indices.len > 0) {
+        try writer.print("\n## {s}\n\n", .{section_name});
+        for (member_indices) |idx| {
+            try self.formatMemberLine(idx, writer);
+        }
+    }
+}
+
+fn formatMemberLine(self: DocDatabase, member_idx: usize, writer: *Writer) !void {
+    const member = self.symbols.values()[member_idx];
+
+    try writer.print("- **{s}", .{member.name});
+
+    if (member.signature) |sig| {
+        try writer.writeAll(sig);
+    }
+
+    try writer.writeAll("**");
+
+    if (member.brief_description) |brief| {
+        try writer.print(" - {s}", .{brief});
+    }
+
+    try writer.writeByte('\n');
+}
+
+pub fn generateMarkdownForSymbol(self: DocDatabase, allocator: Allocator, symbol: []const u8, writer: *Writer) !void {
+    try self.generateMarkdownForEntry(allocator, self.symbols.get(symbol) orelse return error.SymbolNotFound, writer);
 }
 
 test "parse simple builtin class from JSON" {
@@ -622,7 +685,7 @@ test "generateMarkdownForSymbol for global function" {
     var file_writer = file.writer(&buf);
     const writer = &file_writer.interface;
 
-    try db.generateMarkdownForSymbol("sin", writer);
+    try db.generateMarkdownForSymbol(allocator, "sin", writer);
     try writer.flush();
 }
 
@@ -651,7 +714,7 @@ test "generateMarkdownForSymbol for class with brief description" {
     var file_writer = file.writer(&buf);
     const writer = &file_writer.interface;
 
-    try db.generateMarkdownForSymbol("Node2D", writer);
+    try db.generateMarkdownForSymbol(allocator, "Node2D", writer);
     try writer.flush();
 }
 
@@ -688,7 +751,73 @@ test "generateMarkdownForSymbol for property with parent" {
     var file_writer = file.writer(&buf);
     const writer = &file_writer.interface;
 
-    try db.generateMarkdownForSymbol("Node2D.position", writer);
+    try db.generateMarkdownForSymbol(allocator, "Node2D.position", writer);
+    try writer.flush();
+}
+
+// RED PHASE: Test for class with member listings
+test "generateMarkdownForSymbol for class with members" {
+    const allocator = std.testing.allocator;
+
+    var db = DocDatabase{
+        .symbols = StringArrayHashMap(Entry).empty,
+    };
+    defer db.symbols.deinit(allocator);
+
+    // Create parent class
+    var member_indices = [_]usize{ 1, 2, 3 };
+    const class_entry = Entry{
+        .key = "Node2D",
+        .name = "Node2D",
+        .kind = .class,
+        .brief_description = "A 2D game object.",
+        .description = "Node2D is the base class for all 2D scene objects.",
+        .members = &member_indices,
+    };
+    try db.symbols.put(allocator, "Node2D", class_entry);
+
+    // Create property member
+    const property_entry = Entry{
+        .key = "Node2D.position",
+        .name = "position",
+        .parent_index = 0,
+        .kind = .property,
+        .brief_description = "Position relative to parent.",
+        .signature = ": Vector2",
+    };
+    try db.symbols.put(allocator, "Node2D.position", property_entry);
+
+    // Create method member with signature
+    const method_entry = Entry{
+        .key = "Node2D.get_global_position",
+        .name = "get_global_position",
+        .parent_index = 0,
+        .kind = .method,
+        .brief_description = "Returns the global position.",
+        .signature = "() -> Vector2",
+    };
+    try db.symbols.put(allocator, "Node2D.get_global_position", method_entry);
+
+    // Create constant member
+    const constant_entry = Entry{
+        .key = "Node2D.NOTIFICATION_READY",
+        .name = "NOTIFICATION_READY",
+        .parent_index = 0,
+        .kind = .constant,
+        .brief_description = "Ready notification.",
+        .signature = ": int",
+    };
+    try db.symbols.put(allocator, "Node2D.NOTIFICATION_READY", constant_entry);
+
+    // Write snapshot
+    var file = try std.fs.cwd().createFile("snapshots/class_with_members.md", .{});
+    defer file.close();
+
+    var buf: [4096]u8 = undefined;
+    var file_writer = file.writer(&buf);
+    const writer = &file_writer.interface;
+
+    try db.generateMarkdownForSymbol(allocator, "Node2D", writer);
     try writer.flush();
 }
 

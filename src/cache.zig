@@ -93,7 +93,7 @@ pub fn writeSymbolMarkdown(allocator: Allocator, db: DocDatabase, symbol: []cons
     var file_writer = output_file.writer(&buf);
     var writer = &file_writer.interface;
 
-    try db.generateMarkdownForSymbol(symbol, writer);
+    try db.generateMarkdownForSymbol(allocator, symbol, writer);
     try writer.flush();
 }
 
