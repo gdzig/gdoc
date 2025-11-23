@@ -272,7 +272,13 @@ pub fn lookupSymbolExact(self: DocDatabase, symbol: []const u8) DocDatabase.Erro
 }
 
 fn generateMarkdownForEntry(self: DocDatabase, allocator: Allocator, entry: Entry, writer: *Writer) !void {
-    try writer.print("# {s}\n", .{entry.key});
+    try writer.print("# {s}", .{entry.key});
+
+    if (entry.signature) |sig| {
+        try writer.writeAll(sig);
+    }
+
+    try writer.writeByte('\n');
 
     if (entry.parent_index) |parent_index| {
         const parent = self.symbols.values()[parent_index];
@@ -672,7 +678,7 @@ test "generateMarkdownForSymbol for global function" {
         .name = "sin",
         .kind = .global_function,
         .description = "Returns the sine of angle in radians.",
-        .signature = "float sin(float angle)",
+        .signature = "(angle: float)",
     };
     try db.symbols.put(allocator, "sin", entry);
 
@@ -738,7 +744,6 @@ test "generateMarkdownForSymbol for property with parent" {
         .parent_index = 0,
         .kind = .property,
         .description = "Position, relative to the node's parent.",
-        .signature = "Vector2",
     };
     try db.symbols.put(allocator, "Node2D.position", entry);
 
@@ -751,6 +756,128 @@ test "generateMarkdownForSymbol for property with parent" {
     const writer = &file_writer.interface;
 
     try db.generateMarkdownForSymbol(allocator, "Node2D.position", writer);
+    try writer.flush();
+}
+
+test "generateMarkdownForSymbol for class without brief descriptions" {
+    const allocator = std.testing.allocator;
+
+    var db = DocDatabase{
+        .symbols = StringArrayHashMap(Entry).empty,
+    };
+    defer db.symbols.deinit(allocator);
+
+    // Create parent class without brief description
+    var member_indices = [_]usize{ 1, 2 };
+    const class_entry = Entry{
+        .key = "Vector2",
+        .name = "Vector2",
+        .kind = .class,
+        .description = "A 2D vector using floating point coordinates.",
+        .members = &member_indices,
+    };
+    try db.symbols.put(allocator, "Vector2", class_entry);
+
+    // Create property member WITHOUT brief description
+    const property_entry = Entry{
+        .key = "Vector2.x",
+        .name = "x",
+        .parent_index = 0,
+        .kind = .property,
+        .signature = ": float",
+    };
+    try db.symbols.put(allocator, "Vector2.x", property_entry);
+
+    // Create method member WITHOUT brief description
+    const method_entry = Entry{
+        .key = "Vector2.normalized",
+        .name = "normalized",
+        .parent_index = 0,
+        .kind = .method,
+        .signature = "() -> Vector2",
+    };
+    try db.symbols.put(allocator, "Vector2.normalized", method_entry);
+
+    // Write snapshot
+    var file = try std.fs.cwd().createFile("snapshots/class_without_brief.md", .{});
+    defer file.close();
+
+    var buf: [4096]u8 = undefined;
+    var file_writer = file.writer(&buf);
+    const writer = &file_writer.interface;
+
+    try db.generateMarkdownForSymbol(allocator, "Vector2", writer);
+    try writer.flush();
+}
+
+test "generateMarkdownForSymbol for method with signature" {
+    const allocator = std.testing.allocator;
+
+    var db = DocDatabase{
+        .symbols = StringArrayHashMap(Entry).empty,
+    };
+    defer db.symbols.deinit(allocator);
+
+    // Create parent class
+    const parent = Entry{
+        .key = "Node",
+        .name = "Node",
+        .kind = .class,
+    };
+    try db.symbols.put(allocator, "Node", parent);
+
+    // Create method with full signature
+    const method_entry = Entry{
+        .key = "Node.add_child",
+        .name = "add_child",
+        .parent_index = 0,
+        .kind = .method,
+        .brief_description = "Adds a child node.",
+        .description = "Adds a child node. Nodes can have any number of children, but every child must have a unique name.",
+        .signature = "(node: Node, force_readable_name: bool = false)",
+    };
+    try db.symbols.put(allocator, "Node.add_child", method_entry);
+
+    // Write snapshot
+    var file = try std.fs.cwd().createFile("snapshots/method_with_signature.md", .{});
+    defer file.close();
+
+    var buf: [4096]u8 = undefined;
+    var file_writer = file.writer(&buf);
+    const writer = &file_writer.interface;
+
+    try db.generateMarkdownForSymbol(allocator, "Node.add_child", writer);
+    try writer.flush();
+}
+
+test "generateMarkdownForSymbol for global function with signature" {
+    const allocator = std.testing.allocator;
+
+    var db = DocDatabase{
+        .symbols = StringArrayHashMap(Entry).empty,
+    };
+    defer db.symbols.deinit(allocator);
+
+    // Create global function with signature
+    const function_entry = Entry{
+        .key = "sin",
+        .name = "sin",
+        .kind = .global_function,
+        .brief_description = "Returns the sine of angle in radians.",
+        .description = "Returns the sine of angle `angle_rad` in radians. `sin()` has a high precision and is slower than `sinf()`. If you need better performance, use `sinf()`.",
+        .signature = "(angle_rad: float) -> float",
+    };
+    try db.symbols.put(allocator, "sin", function_entry);
+
+    // Write snapshot
+    var file = try std.fs.cwd().createFile("snapshots/global_function_with_signature.md", .{});
+    defer file.close();
+
+    var buf: [4096]u8 = undefined;
+    var file_writer = file.writer(&buf);
+    const writer = &file_writer.interface;
+
+    try db.generateMarkdownForSymbol(allocator, "sin", writer);
     try writer.flush();
 }
 
