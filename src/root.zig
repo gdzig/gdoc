@@ -318,6 +318,16 @@ test "markdownForSymbol reads from markdown cache when available" {
     // Ensure cache directory exists
     try cache.ensureDirectoryExists(cache_dir);
 
+    // Create extension_api.json in cache to prevent godot execution
+    // Use a different class name so it doesn't overwrite our test markdown
+    const json_path = try cache.getJsonCachePathInDir(allocator, cache_dir);
+    defer allocator.free(json_path);
+
+    const test_json =
+        \\{"builtin_classes": [{"name": "DummyClass", "brief_description": "A dummy class"}]}
+    ;
+    try std.fs.cwd().writeFile(.{ .sub_path = json_path, .data = test_json });
+
     // Pre-populate cache with a markdown file for TestCachedClass
     const testclass_dir = try std.fmt.allocPrint(allocator, "{s}/TestCachedClass", .{cache_dir});
     defer allocator.free(testclass_dir);
