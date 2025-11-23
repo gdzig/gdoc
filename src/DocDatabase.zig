@@ -41,24 +41,24 @@ const RootState = enum {
     utility_functions,
 };
 
-pub fn loadFromJsonFileLeaky(gpa: Allocator, file: File) !DocDatabase {
+pub fn loadFromJsonFileLeaky(arena_allocator: Allocator, file: File) !DocDatabase {
     var buf: [4096]u8 = undefined;
     var file_reader = file.reader(&buf);
     const reader = &file_reader.interface;
 
-    const file_content = try reader.readAlloc(gpa, try file.getEndPos());
-    defer gpa.free(file_content);
+    const file_content = try reader.readAlloc(arena_allocator, try file.getEndPos());
+    defer arena_allocator.free(file_content);
 
-    var scanner = Scanner.initCompleteInput(gpa, file_content);
+    var scanner = Scanner.initCompleteInput(arena_allocator, file_content);
     defer scanner.deinit();
 
-    return loadFromJsonLeaky(gpa, &scanner) catch |err| switch (err) {
+    return loadFromJsonLeaky(arena_allocator, &scanner) catch |err| switch (err) {
         Scanner.Error.SyntaxError, Scanner.Error.UnexpectedEndOfInput => return Error.InvalidApiJson,
         else => return err,
     };
 }
 
-pub fn loadFromJsonLeaky(gpa: Allocator, scanner: *Scanner) !DocDatabase {
+pub fn loadFromJsonLeaky(arena_allocator: Allocator, scanner: *Scanner) !DocDatabase {
     var db = DocDatabase{};
 
     while (true) {
@@ -72,9 +72,9 @@ pub fn loadFromJsonLeaky(gpa: Allocator, scanner: *Scanner) !DocDatabase {
                 };
 
                 switch (state) {
-                    .builtin_classes => try parseClasses(.builtin_class, gpa, scanner, &db),
-                    .classes => try parseClasses(.class, gpa, scanner, &db),
-                    .utility_functions => try parseGlobalMethods(gpa, scanner, &db),
+                    .builtin_classes => try db.parseClasses(.builtin_class, arena_allocator, scanner),
+                    .classes => try db.parseClasses(.class, arena_allocator, scanner),
+                    .utility_functions => try db.parseGlobalMethods(arena_allocator, scanner),
                     else => continue,
                 }
             },
@@ -86,15 +86,15 @@ pub fn loadFromJsonLeaky(gpa: Allocator, scanner: *Scanner) !DocDatabase {
     return db;
 }
 
-fn parseGlobalMethods(allocator: Allocator, scanner: *Scanner, db: *DocDatabase) !void {
+fn parseGlobalMethods(self: *DocDatabase, allocator: Allocator, scanner: *Scanner) !void {
     std.debug.assert(try scanner.next() == .array_begin);
 
     while (true) {
         const token = try scanner.next();
         switch (token) {
             .object_begin => {
-                const method = try parseMethod(.global_function, allocator, scanner);
-                try db.symbols.put(allocator, method.key, method);
+                const method = try self.parseMethod(.global_function, allocator, scanner);
+                try self.symbols.put(allocator, method.key, method);
             },
             .array_end => break,
             .end_of_document => unreachable,
@@ -103,14 +103,14 @@ fn parseGlobalMethods(allocator: Allocator, scanner: *Scanner, db: *DocDatabase)
     }
 }
 
-fn parseClasses(comptime kind: EntryKind, allocator: Allocator, scanner: *Scanner, db: *DocDatabase) !void {
+fn parseClasses(self: *DocDatabase, comptime kind: EntryKind, allocator: Allocator, scanner: *Scanner) !void {
     std.debug.assert(try scanner.next() == .array_begin);
 
     while (true) {
         const token = try scanner.next();
         switch (token) {
             .object_begin => {
-                try parseClass(allocator, scanner, kind, db);
+                try self.parseClass(allocator, scanner, kind);
             },
             .array_end => break,
             .end_of_document => unreachable,
@@ -122,8 +122,12 @@ fn parseClasses(comptime kind: EntryKind, allocator: Allocator, scanner: *Scanne
 const ClassKey = enum {
     name,
     methods,
+    properties,
+    signals,
+    constants,
     description,
     brief_description,
+    enums,
 };
 
 fn bbcodeToMarkdown(allocator: Allocator, input: []const u8) ![]const u8 {
@@ -137,15 +141,18 @@ fn bbcodeToMarkdown(allocator: Allocator, input: []const u8) ![]const u8 {
     return try output.toOwnedSlice();
 }
 
-fn parseClass(allocator: Allocator, scanner: *Scanner, kind: EntryKind, db: *DocDatabase) !void {
+fn parseClass(self: *DocDatabase, allocator: Allocator, scanner: *Scanner, kind: EntryKind) !void {
     var entry: Entry = .{
         .name = undefined,
         .key = undefined,
         .kind = kind,
     };
 
-    var method_entries: ArrayList(Entry) = .empty;
-    defer method_entries.deinit(allocator);
+    var methods: []Entry = &.{};
+    var properties: []Entry = &.{};
+    var signals: []Entry = &.{};
+    var constants: []Entry = &.{};
+    var enums: []Entry = &.{};
 
     while (true) {
         const token = try scanner.next();
@@ -165,22 +172,11 @@ fn parseClass(allocator: Allocator, scanner: *Scanner, kind: EntryKind, db: *Doc
                         entry.name = try allocator.dupe(u8, name.string);
                         entry.key = entry.name;
                     },
-                    .methods => {
-                        const methods = try scanner.next();
-                        std.debug.assert(methods == .array_begin);
-
-                        while (true) {
-                            const method_token = try scanner.next();
-                            switch (method_token) {
-                                .object_begin => {
-                                    try method_entries.append(allocator, try parseMethod(.method, allocator, scanner));
-                                },
-                                .array_end => break,
-                                .end_of_document => unreachable,
-                                else => {},
-                            }
-                        }
-                    },
+                    .methods => methods = try self.parseClassMethods(allocator, scanner),
+                    .properties => properties = try self.parseClassProperties(allocator, scanner),
+                    .signals => signals = try self.parseClassSignals(allocator, scanner),
+                    .constants => constants = try self.parseClassConstants(allocator, scanner),
+                    .enums => enums = try self.parseClassEnums(allocator, scanner),
                     .brief_description => entry.brief_description = try nextTokenToMarkdownAlloc(allocator, scanner),
                     .description => entry.description = try nextTokenToMarkdownAlloc(allocator, scanner),
                 }
@@ -191,24 +187,326 @@ fn parseClass(allocator: Allocator, scanner: *Scanner, kind: EntryKind, db: *Doc
         }
     }
 
-    try db.symbols.put(allocator, entry.key, entry);
-    const parent_index = db.symbols.getIndex(entry.name).?;
-    var entry_ptr = db.symbols.getPtr(entry.name).?;
+    try self.symbols.put(allocator, entry.key, entry);
+    const entry_idx = self.symbols.getIndex(entry.name).?;
 
-    var member_indices = try allocator.alloc(usize, method_entries.items.len);
-    entry_ptr.members = member_indices;
+    const member_count = methods.len + properties.len + signals.len + constants.len + enums.len;
 
-    for (method_entries.items, 0..) |*method_entry, i| {
-        method_entry.parent_index = parent_index;
-        method_entry.key = try std.fmt.allocPrint(allocator, "{s}.{s}", .{ entry.name, method_entry.name });
+    var member_indices: ArrayList(usize) = .empty;
+    defer member_indices.deinit(allocator);
+    try member_indices.ensureTotalCapacity(allocator, member_count);
 
-        // store method entry in the database
-        try db.symbols.put(allocator, method_entry.key, method_entry.*);
+    try self.appendEntries(allocator, entry, entry_idx, methods, &member_indices);
+    try self.appendEntries(allocator, entry, entry_idx, properties, &member_indices);
+    try self.appendEntries(allocator, entry, entry_idx, signals, &member_indices);
+    try self.appendEntries(allocator, entry, entry_idx, constants, &member_indices);
+    try self.appendEntries(allocator, entry, entry_idx, enums, &member_indices);
 
-        // update method index on the parent entry
-        const method_index = db.symbols.getIndex(method_entry.key).?;
-        member_indices[i] = method_index;
+    if (member_indices.items.len > 0) {
+        var entry_ptr = self.symbols.getPtr(entry.key).?;
+        entry_ptr.members = try member_indices.toOwnedSlice(allocator);
     }
+}
+
+fn appendEntries(self: *DocDatabase, allocator: Allocator, parent: Entry, parent_idx: usize, entries: []Entry, indices: *ArrayList(usize)) !void {
+    for (entries) |*property_entry| {
+        property_entry.parent_index = parent_idx;
+        property_entry.key = try std.fmt.allocPrint(allocator, "{s}.{s}", .{ parent.name, property_entry.name });
+
+        // store property entry in the database
+        try self.symbols.put(allocator, property_entry.key, property_entry.*);
+
+        // update property index on the parent entry
+        const property_index = self.symbols.getIndex(property_entry.key).?;
+        indices.appendAssumeCapacity(property_index);
+    }
+}
+
+fn parseClassEnums(self: *const DocDatabase, allocator: Allocator, scanner: *Scanner) ![]Entry {
+    var enums: ArrayList(Entry) = .empty;
+    defer enums.deinit(allocator);
+
+    const enums_token = try scanner.next();
+    std.debug.assert(enums_token == .array_begin);
+
+    while (true) {
+        const enum_token = try scanner.next();
+        switch (enum_token) {
+            .object_begin => {
+                try enums.append(allocator, try self.parseEnum(allocator, scanner));
+            },
+            .array_end => break,
+            .end_of_document => unreachable,
+            else => {},
+        }
+    }
+
+    return enums.toOwnedSlice(allocator);
+}
+
+fn parseClassMethods(self: *const DocDatabase, allocator: Allocator, scanner: *Scanner) ![]Entry {
+    var methods: ArrayList(Entry) = .empty;
+    defer methods.deinit(allocator);
+
+    const methods_token = try scanner.next();
+    std.debug.assert(methods_token == .array_begin);
+
+    while (true) {
+        const method_token = try scanner.next();
+        switch (method_token) {
+            .object_begin => {
+                try methods.append(allocator, try self.parseMethod(.method, allocator, scanner));
+            },
+            .array_end => break,
+            .end_of_document => unreachable,
+            else => {},
+        }
+    }
+
+    return methods.toOwnedSlice(allocator);
+}
+
+fn parseClassProperties(self: *const DocDatabase, allocator: Allocator, scanner: *Scanner) ![]Entry {
+    var properties: ArrayList(Entry) = .empty;
+    defer properties.deinit(allocator);
+
+    const properties_token = try scanner.next();
+    std.debug.assert(properties_token == .array_begin);
+
+    while (true) {
+        const property_token = try scanner.next();
+        switch (property_token) {
+            .object_begin => {
+                try properties.append(allocator, try self.parseProperty(allocator, scanner));
+            },
+            .array_end => break,
+            .end_of_document => unreachable,
+            else => {},
+        }
+    }
+
+    return properties.toOwnedSlice(allocator);
+}
+
+const PropertyKey = enum {
+    name,
+    type,
+    getter,
+    setter,
+};
+
+fn parseProperty(self: *const DocDatabase, allocator: Allocator, scanner: *Scanner) !Entry {
+    _ = self; // autofix
+
+    var property: Entry = .{
+        .name = undefined,
+        .key = undefined,
+        .kind = .property,
+    };
+
+    while (true) {
+        const token = try scanner.next();
+        switch (token) {
+            .string => |s| {
+                std.debug.assert(scanner.string_is_object_key);
+                const property_key = std.meta.stringToEnum(PropertyKey, s) orelse {
+                    try scanner.skipValue();
+                    continue;
+                };
+
+                switch (property_key) {
+                    .name => {
+                        const name = try scanner.next();
+                        std.debug.assert(name == .string);
+
+                        property.name = try allocator.dupe(u8, name.string);
+                        property.key = property.name;
+                    },
+                    .type => {
+                        const @"type" = try scanner.next();
+                        std.debug.assert(@"type" == .string);
+
+                        property.signature = try std.fmt.allocPrint(allocator, ": {s}", .{@"type".string});
+                    },
+                    else => try scanner.skipValue(),
+                }
+            },
+            .object_end => break,
+            else => {},
+        }
+    }
+
+    return property;
+}
+
+const SignalKey = enum {
+    name,
+};
+
+fn parseClassSignals(self: *const DocDatabase, allocator: Allocator, scanner: *Scanner) ![]Entry {
+    var signals: ArrayList(Entry) = .empty;
+    defer signals.deinit(allocator);
+
+    const methods_token = try scanner.next();
+    std.debug.assert(methods_token == .array_begin);
+
+    while (true) {
+        const signal_token = try scanner.next();
+        switch (signal_token) {
+            .object_begin => {
+                try signals.append(allocator, try self.parseSignal(allocator, scanner));
+            },
+            .array_end => break,
+            .end_of_document => unreachable,
+            else => {},
+        }
+    }
+
+    return signals.toOwnedSlice(allocator);
+}
+
+fn parseSignal(self: *const DocDatabase, allocator: Allocator, scanner: *Scanner) !Entry {
+    _ = self; // autofix
+
+    var signal: Entry = .{
+        .name = undefined,
+        .key = undefined,
+        .kind = .signal,
+    };
+
+    while (true) {
+        const token = try scanner.next();
+        switch (token) {
+            .string => |s| {
+                std.debug.assert(scanner.string_is_object_key);
+                const signal_key = std.meta.stringToEnum(SignalKey, s) orelse {
+                    try scanner.skipValue();
+                    continue;
+                };
+
+                switch (signal_key) {
+                    .name => {
+                        const name = try scanner.next();
+                        std.debug.assert(name == .string);
+
+                        signal.name = try allocator.dupe(u8, name.string);
+                        signal.key = signal.name;
+                    },
+                }
+            },
+            .object_end => break,
+            .end_of_document => unreachable,
+            else => {},
+        }
+    }
+
+    return signal;
+}
+
+const EnumKey = enum {
+    name,
+};
+
+fn parseEnum(self: *const DocDatabase, allocator: Allocator, scanner: *Scanner) !Entry {
+    _ = self; // autofix
+
+    var entry: Entry = .{
+        .name = undefined,
+        .key = undefined,
+        .kind = .enum_value,
+    };
+
+    while (true) {
+        const token = try scanner.next();
+        switch (token) {
+            .string => |s| {
+                std.debug.assert(scanner.string_is_object_key);
+                const enum_key = std.meta.stringToEnum(EnumKey, s) orelse {
+                    try scanner.skipValue();
+                    continue;
+                };
+
+                switch (enum_key) {
+                    .name => {
+                        const name = try scanner.next();
+                        std.debug.assert(name == .string);
+
+                        entry.name = try allocator.dupe(u8, name.string);
+                        entry.key = entry.name;
+                    },
+                }
+            },
+            .object_end => break,
+            .end_of_document => unreachable,
+            else => {},
+        }
+    }
+
+    return entry;
+}
+
+const ConstantKey = enum {
+    name,
+};
+
+fn parseConstant(self: *const DocDatabase, allocator: Allocator, scanner: *Scanner) !Entry {
+    _ = self; // autofix
+
+    var constant: Entry = .{
+        .name = undefined,
+        .key = undefined,
+        .kind = .constant,
+    };
+
+    while (true) {
+        const token = try scanner.next();
+        switch (token) {
+            .string => |s| {
+                std.debug.assert(scanner.string_is_object_key);
+                const constant_key = std.meta.stringToEnum(ConstantKey, s) orelse {
+                    try scanner.skipValue();
+                    continue;
+                };
+
+                switch (constant_key) {
+                    .name => {
+                        const name = try scanner.next();
+                        std.debug.assert(name == .string);
+
+                        constant.name = try allocator.dupe(u8, name.string);
+                        constant.key = constant.name;
+                    },
+                }
+            },
+            .object_end => break,
+            .end_of_document => unreachable,
+            else => {},
+        }
+    }
+
+    return constant;
+}
+
+fn parseClassConstants(self: *const DocDatabase, allocator: Allocator, scanner: *Scanner) ![]Entry {
+    var constants: ArrayList(Entry) = .empty;
+    defer constants.deinit(allocator);
+
+    const constants_token = try scanner.next();
+    std.debug.assert(constants_token == .array_begin);
+
+    while (true) {
+        const constant_token = try scanner.next();
+        switch (constant_token) {
+            .object_begin => {
+                try constants.append(allocator, try self.parseConstant(allocator, scanner));
+            },
+            .array_end => break,
+            .end_of_document => unreachable,
+            else => {},
+        }
+    }
+
+    return constants.toOwnedSlice(allocator);
 }
 
 fn nextTokenToMarkdownAlloc(allocator: Allocator, scanner: *Scanner) ![]const u8 {
@@ -226,7 +524,9 @@ const MethodKey = enum {
     name,
 };
 
-fn parseMethod(comptime kind: EntryKind, allocator: Allocator, scanner: *Scanner) !Entry {
+fn parseMethod(self: *const DocDatabase, comptime kind: EntryKind, allocator: Allocator, scanner: *Scanner) !Entry {
+    _ = self; // autofix
+
     switch (kind) {
         .method, .global_function => {},
         else => comptime unreachable,
@@ -662,6 +962,190 @@ test "skip unknown class fields like api_type" {
     try std.testing.expect(entry != null);
     try std.testing.expectEqualStrings("Node2D", entry.?.name);
     try std.testing.expectEqual(EntryKind.class, entry.?.kind);
+}
+
+// RED PHASE: Test parsing properties from class
+test "parse class with properties array" {
+    var arena = ArenaAllocator.init(std.testing.allocator);
+    const allocator = arena.allocator();
+    defer arena.deinit();
+
+    const json_source =
+        \\{
+        \\  "classes": [
+        \\    {
+        \\      "name": "Node2D",
+        \\      "properties": [
+        \\        {
+        \\          "name": "position",
+        \\          "type": "Vector2",
+        \\          "setter": "set_position",
+        \\          "getter": "get_position"
+        \\        }
+        \\      ]
+        \\    }
+        \\  ]
+        \\}
+    ;
+
+    var json_scanner = Scanner.initCompleteInput(allocator, json_source);
+    const db = try DocDatabase.loadFromJsonLeaky(allocator, &json_scanner);
+
+    // Verify the class has members with the property
+    const class_entry = db.symbols.get("Node2D");
+    try std.testing.expect(class_entry != null);
+    try std.testing.expect(class_entry.?.members != null);
+    try std.testing.expectEqual(@as(usize, 1), class_entry.?.members.?.len);
+
+    // Verify the property entry exists
+    const property_entry = db.symbols.get("Node2D.position");
+    try std.testing.expect(property_entry != null);
+    try std.testing.expectEqualStrings("position", property_entry.?.name);
+    try std.testing.expectEqualStrings("Node2D.position", property_entry.?.key);
+    try std.testing.expectEqual(EntryKind.property, property_entry.?.kind);
+
+    // Verify property is in the class members
+    const member = db.symbols.values()[class_entry.?.members.?[0]];
+    try std.testing.expectEqualStrings("position", member.name);
+    try std.testing.expectEqual(EntryKind.property, member.kind);
+}
+
+// RED PHASE: Test parsing signals from class
+test "parse class with signals array" {
+    var arena = ArenaAllocator.init(std.testing.allocator);
+    const allocator = arena.allocator();
+    defer arena.deinit();
+
+    const json_source =
+        \\{
+        \\  "classes": [
+        \\    {
+        \\      "name": "Area2D",
+        \\      "signals": [
+        \\        {
+        \\          "name": "body_entered",
+        \\          "description": "Emitted when a body enters."
+        \\        }
+        \\      ]
+        \\    }
+        \\  ]
+        \\}
+    ;
+
+    var json_scanner = Scanner.initCompleteInput(allocator, json_source);
+    const db = try DocDatabase.loadFromJsonLeaky(allocator, &json_scanner);
+
+    // Verify the class has members with the signal
+    const class_entry = db.symbols.get("Area2D");
+    try std.testing.expect(class_entry != null);
+    try std.testing.expect(class_entry.?.members != null);
+    try std.testing.expectEqual(@as(usize, 1), class_entry.?.members.?.len);
+
+    // Verify the signal entry exists
+    const signal_entry = db.symbols.get("Area2D.body_entered");
+    try std.testing.expect(signal_entry != null);
+    try std.testing.expectEqualStrings("body_entered", signal_entry.?.name);
+    try std.testing.expectEqualStrings("Area2D.body_entered", signal_entry.?.key);
+    try std.testing.expectEqual(EntryKind.signal, signal_entry.?.kind);
+
+    // Verify signal is in the class members
+    const member = db.symbols.values()[class_entry.?.members.?[0]];
+    try std.testing.expectEqualStrings("body_entered", member.name);
+    try std.testing.expectEqual(EntryKind.signal, member.kind);
+}
+
+// RED PHASE: Test parsing constants from class
+test "parse class with constants array" {
+    var arena = ArenaAllocator.init(std.testing.allocator);
+    const allocator = arena.allocator();
+    defer arena.deinit();
+
+    const json_source =
+        \\{
+        \\  "classes": [
+        \\    {
+        \\      "name": "Node",
+        \\      "constants": [
+        \\        {
+        \\          "name": "NOTIFICATION_READY",
+        \\          "value": 30
+        \\        }
+        \\      ]
+        \\    }
+        \\  ]
+        \\}
+    ;
+
+    var json_scanner = Scanner.initCompleteInput(allocator, json_source);
+    const db = try DocDatabase.loadFromJsonLeaky(allocator, &json_scanner);
+
+    // Verify the class has members with the constant
+    const class_entry = db.symbols.get("Node");
+    try std.testing.expect(class_entry != null);
+    try std.testing.expect(class_entry.?.members != null);
+    try std.testing.expectEqual(@as(usize, 1), class_entry.?.members.?.len);
+
+    // Verify the constant entry exists
+    const constant_entry = db.symbols.get("Node.NOTIFICATION_READY");
+    try std.testing.expect(constant_entry != null);
+    try std.testing.expectEqualStrings("NOTIFICATION_READY", constant_entry.?.name);
+    try std.testing.expectEqualStrings("Node.NOTIFICATION_READY", constant_entry.?.key);
+    try std.testing.expectEqual(EntryKind.constant, constant_entry.?.kind);
+
+    // Verify constant is in the class members
+    const member = db.symbols.values()[class_entry.?.members.?[0]];
+    try std.testing.expectEqualStrings("NOTIFICATION_READY", member.name);
+    try std.testing.expectEqual(EntryKind.constant, member.kind);
+}
+
+// RED PHASE: Test parsing enums from class
+test "parse class with enums array" {
+    var arena = ArenaAllocator.init(std.testing.allocator);
+    const allocator = arena.allocator();
+    defer arena.deinit();
+
+    const json_source =
+        \\{
+        \\  "classes": [
+        \\    {
+        \\      "name": "AESContext",
+        \\      "enums": [
+        \\        {
+        \\          "name": "Mode",
+        \\          "is_bitfield": false,
+        \\          "values": [
+        \\            {
+        \\              "name": "MODE_ECB_ENCRYPT",
+        \\              "value": 0
+        \\            }
+        \\          ]
+        \\        }
+        \\      ]
+        \\    }
+        \\  ]
+        \\}
+    ;
+
+    var json_scanner = Scanner.initCompleteInput(allocator, json_source);
+    const db = try DocDatabase.loadFromJsonLeaky(allocator, &json_scanner);
+
+    // Verify the class has members with the enum
+    const class_entry = db.symbols.get("AESContext");
+    try std.testing.expect(class_entry != null);
+    try std.testing.expect(class_entry.?.members != null);
+    try std.testing.expectEqual(@as(usize, 1), class_entry.?.members.?.len);
+
+    // Verify the enum value entry exists
+    const enum_entry = db.symbols.get("AESContext.Mode");
+    try std.testing.expect(enum_entry != null);
+    try std.testing.expectEqualStrings("Mode", enum_entry.?.name);
+    try std.testing.expectEqualStrings("AESContext.Mode", enum_entry.?.key);
+    try std.testing.expectEqual(EntryKind.enum_value, enum_entry.?.kind);
+
+    // Verify enum value is in the class members
+    const member = db.symbols.values()[class_entry.?.members.?[0]];
+    try std.testing.expectEqualStrings("Mode", member.name);
+    try std.testing.expectEqual(EntryKind.enum_value, member.kind);
 }
 
 // RED PHASE: Tests for DocDatabase.generateMarkdownForSymbol using snapshot testing
