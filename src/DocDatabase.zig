@@ -17,7 +17,6 @@ pub const EntryKind = enum {
     global_function,
     operator,
     signal,
-    @"enum",
 };
 
 pub const Entry = struct {
@@ -313,7 +312,7 @@ fn generateMemberListings(self: DocDatabase, allocator: Allocator, member_indice
             .method => try methods.append(allocator, idx),
             .signal => try signals.append(allocator, idx),
             .constant => try constants.append(allocator, idx),
-            .@"enum" => try enums.append(allocator, idx),
+            .enum_value => try enums.append(allocator, idx),
             else => continue,
         }
     }
