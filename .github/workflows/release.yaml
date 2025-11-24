@@ -1,0 +1,115 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    strategy:
+      matrix:
+        target:
+          - os: linux
+            arch: x86_64
+            zig_target: x86_64-linux
+          - os: linux
+            arch: aarch64
+            zig_target: aarch64-linux
+          - os: macos
+            arch: x86_64
+            zig_target: x86_64-macos
+          - os: macos
+            arch: aarch64
+            zig_target: aarch64-macos
+          - os: windows
+            arch: x86_64
+            zig_target: x86_64-windows
+          - os: windows
+            arch: aarch64
+            zig_target: aarch64-windows
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Zig
+        uses: mlugg/setup-zig@v2
+
+      - name: Build for ${{ matrix.target.os }}-${{ matrix.target.arch }}
+        run: |
+          zig build -Dtarget=${{ matrix.target.zig_target }} -Doptimize=ReleaseSafe
+
+      - name: Package binary
+        run: |
+          # Extract version from tag (remove 'v' prefix)
+          VERSION=${GITHUB_REF#refs/tags/v}
+
+          # Create staging directory
+          STAGING_DIR="gdoc-${VERSION}-${{ matrix.target.os }}-${{ matrix.target.arch }}"
+          mkdir -p "${STAGING_DIR}"
+
+          # Copy binary to staging directory
+          if [[ "${{ matrix.target.os }}" == "windows" ]]; then
+            cp zig-out/bin/gdoc.exe "${STAGING_DIR}/"
+          else
+            cp zig-out/bin/gdoc "${STAGING_DIR}/"
+          fi
+
+          # Copy documentation files
+          cp README.md "${STAGING_DIR}/"
+          cp LICENSE "${STAGING_DIR}/"
+
+          # Create compressed archive
+          mkdir -p artifacts
+          if [[ "${{ matrix.target.os }}" == "windows" ]]; then
+            # Create zip archive for Windows
+            zip -r "artifacts/${STAGING_DIR}.zip" "${STAGING_DIR}"
+          else
+            # Create tar.gz archive for Unix-like systems
+            tar -czf "artifacts/${STAGING_DIR}.tar.gz" "${STAGING_DIR}"
+          fi
+
+          # List created archives for verification
+          ls -la artifacts/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gdoc-${{ matrix.target.os }}-${{ matrix.target.arch }}
+          path: artifacts/
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release-assets
+          # Copy all compressed archives to release assets
+          find release-artifacts -name "*.tar.gz" -type f -exec cp {} release-assets/ \;
+          find release-artifacts -name "*.zip" -type f -exec cp {} release-assets/ \;
+          ls -la release-assets/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-assets/*
+          generate_release_notes: true
+          draft: false
+          prerelease: false
