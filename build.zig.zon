@@ -5,8 +5,8 @@
     .minimum_zig_version = "0.15.1",
     .dependencies = .{
         .bbcodez = .{
-            .url = "git+https://github.com/deevus/bbcodez.git#c289e0f3b6e0ebd0fba9e76a688775282feadb70",
-            .hash = "bbcodez-0.0.1-dev-YlrOBtiaAQBg3W_GpcPadnJpkfSw8MN3dT-emD79AWPS",
+            .url = "git+https://github.com/gdzig/bbcodez.git#5a4f5bd131552e7394ef26b01883370eb422eca4",
+            .hash = "bbcodez-0.0.1-dev-YlrOBo-iAQBWdgFSZ5eINgMNAZlmrHLQ35zKSZEEqgS2",
         },
         .known_folders = .{
             .url = "https://github.com/ziglibs/known-folders/archive/83d39161eac2ed6f37ad3cb4d9dd518696ce90bb.tar.gz",
