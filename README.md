@@ -20,11 +20,11 @@ Perfect for terminal-first workflows and quick API reference checks while coding
 
 ### Pre-built Binaries
 
-Download the latest release for your platform from the [releases page](https://github.com/gdzig/gdoc/releases) (coming soon):
+Download the latest release for your platform from the [releases page](https://github.com/gdzig/gdoc/releases):
 
-- **macOS**: `gdoc-macos-arm64` or `gdoc-macos-x86_64`
-- **Linux**: `gdoc-linux-x86_64` or `gdoc-linux-arm64`
-- **Windows**: `gdoc-windows-x86_64` or `gdoc-windows-arm64`
+- **macOS**: `gdoc-macos-aarch64` or `gdoc-macos-x86_64`
+- **Linux**: `gdoc-linux-x86_64` or `gdoc-linux-aarch64`
+- **Windows**: `gdoc-windows-x86_64` or `gdoc-windows-aarch64`
 
 #### Mac/Linux
 
