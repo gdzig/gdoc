@@ -226,6 +226,7 @@ fn appendEntries(self: *DocDatabase, allocator: Allocator, parent: Entry, parent
 
 const MethodKey = enum {
     name,
+    description,
 };
 
 const PropertyKey = enum {
@@ -233,18 +234,22 @@ const PropertyKey = enum {
     type,
     getter,
     setter,
+    description,
 };
 
 const ConstantKey = enum {
     name,
+    description,
 };
 
 const SignalKey = enum {
     name,
+    description,
 };
 
 const EnumKey = enum {
     name,
+    description,
 };
 
 const kind_key_map: std.StaticStringMap(type) = .initComptime(.{
@@ -258,18 +263,22 @@ const kind_key_map: std.StaticStringMap(type) = .initComptime(.{
 
 const constant_handler_map: std.StaticStringMap(*const fn (Allocator, *Entry, *Scanner) anyerror!void) = .initComptime(.{
     .{ @tagName(ConstantKey.name), handleEntryName },
+    .{ @tagName(ConstantKey.description), handleEntryDescription },
 });
 
 const method_handler_map: std.StaticStringMap(*const fn (Allocator, *Entry, *Scanner) anyerror!void) = .initComptime(.{
     .{ @tagName(MethodKey.name), handleEntryName },
+    .{ @tagName(MethodKey.description), handleEntryDescription },
 });
 
 const signal_handler_map: std.StaticStringMap(*const fn (Allocator, *Entry, *Scanner) anyerror!void) = .initComptime(.{
     .{ @tagName(SignalKey.name), handleEntryName },
+    .{ @tagName(SignalKey.description), handleEntryDescription },
 });
 
 const enum_value_handler_map: std.StaticStringMap(*const fn (Allocator, *Entry, *Scanner) anyerror!void) = .initComptime(.{
     .{ @tagName(EnumKey.name), handleEntryName },
+    .{ @tagName(EnumKey.description), handleEntryDescription },
 });
 
 const property_handler_map: std.StaticStringMap(*const fn (Allocator, *Entry, *Scanner) anyerror!void) = .initComptime(.{
@@ -277,6 +286,8 @@ const property_handler_map: std.StaticStringMap(*const fn (Allocator, *Entry, *S
     .{ @tagName(PropertyKey.type), handlePropertyType },
     .{ @tagName(PropertyKey.getter), skipValue },
     .{ @tagName(PropertyKey.setter), skipValue },
+    // TODO: bbcodez throws for some reason
+    // .{ @tagName(PropertyKey.description), handleEntryDescription },
 });
 
 const kind_handler_map: std.StaticStringMap(std.StaticStringMap(*const fn (Allocator, *Entry, *Scanner) anyerror!void)) = .initComptime(.{
@@ -300,6 +311,10 @@ fn handlePropertyType(allocator: Allocator, entry: *Entry, scanner: *Scanner) an
     const @"type" = try scanner.next();
     std.debug.assert(@"type" == .string);
     entry.signature = try std.fmt.allocPrint(allocator, ": {s}", .{@"type".string});
+}
+
+fn handleEntryDescription(allocator: Allocator, entry: *Entry, scanner: *Scanner) anyerror!void {
+    entry.description = try nextTokenToMarkdownAlloc(allocator, scanner);
 }
 
 fn skipValue(allocator: Allocator, entry: *Entry, scanner: *Scanner) anyerror!void {
@@ -465,6 +480,10 @@ fn formatMemberLine(self: DocDatabase, member_idx: usize, writer: *Writer) !void
 
     if (member.brief_description) |brief| {
         try writer.print(" - {s}", .{brief});
+    } else if (member.description) |desc| {
+        const new_line_idx = std.mem.indexOf(u8, desc, "\n");
+        const first_line = if (new_line_idx) |idx| desc[0..idx] else desc;
+        try writer.print(" - {s}", .{first_line});
     }
 
     try writer.writeByte('\n');
