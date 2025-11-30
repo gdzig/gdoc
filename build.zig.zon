@@ -2,7 +2,7 @@
     .name = .gdoc,
     .version = "0.0.1",
     .fingerprint = 0xfeb534d08010a2a9,
-    .minimum_zig_version = "0.15.1",
+    .minimum_zig_version = "0.15.2",
     .dependencies = .{
         .bbcodez = .{
             .url = "git+https://github.com/gdzig/bbcodez.git#5a4f5bd131552e7394ef26b01883370eb422eca4",
