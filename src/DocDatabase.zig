@@ -1,5 +1,7 @@
 const DocDatabase = @This();
 
+const parser_log = std.log.scoped(.parser);
+
 symbols: StringArrayHashMap(Entry) = .empty,
 
 pub const Error = error{
@@ -93,7 +95,7 @@ fn parseGlobalMethods(self: *DocDatabase, allocator: Allocator, scanner: *Scanne
         const token = try scanner.next();
         switch (token) {
             .object_begin => {
-                const method = try self.parseMethod(.global_function, allocator, scanner);
+                const method = try self.parseEntry(.global_function, allocator, scanner);
                 try self.symbols.put(allocator, method.key, method);
             },
             .array_end => break,
@@ -110,7 +112,7 @@ fn parseClasses(self: *DocDatabase, comptime kind: EntryKind, allocator: Allocat
         const token = try scanner.next();
         switch (token) {
             .object_begin => {
-                try self.parseClass(allocator, scanner, kind);
+                try self.parseClass(kind, allocator, scanner);
             },
             .array_end => break,
             .end_of_document => unreachable,
@@ -141,7 +143,7 @@ fn bbcodeToMarkdown(allocator: Allocator, input: []const u8) ![]const u8 {
     return try output.toOwnedSlice();
 }
 
-fn parseClass(self: *DocDatabase, allocator: Allocator, scanner: *Scanner, kind: EntryKind) !void {
+fn parseClass(self: *DocDatabase, comptime kind: EntryKind, allocator: Allocator, scanner: *Scanner) !void {
     var entry: Entry = .{
         .name = undefined,
         .key = undefined,
@@ -172,8 +174,8 @@ fn parseClass(self: *DocDatabase, allocator: Allocator, scanner: *Scanner, kind:
                         entry.name = try allocator.dupe(u8, name.string);
                         entry.key = entry.name;
                     },
-                    .methods => methods = try self.parseClassMethods(allocator, scanner),
-                    .properties => properties = try self.parseClassProperties(allocator, scanner),
+                    .methods => methods = try self.parseEntryArray(.method, allocator, scanner),
+                    .properties => properties = try self.parseEntryArray(.property, allocator, scanner),
                     .signals => signals = try self.parseEntryArray(.signal, allocator, scanner),
                     .constants => constants = try self.parseEntryArray(.constant, allocator, scanner),
                     .enums => enums = try self.parseEntryArray(.enum_value, allocator, scanner),
@@ -222,49 +224,9 @@ fn appendEntries(self: *DocDatabase, allocator: Allocator, parent: Entry, parent
     }
 }
 
-fn parseClassMethods(self: *const DocDatabase, allocator: Allocator, scanner: *Scanner) ![]Entry {
-    var methods: ArrayList(Entry) = .empty;
-    defer methods.deinit(allocator);
-
-    const methods_token = try scanner.next();
-    std.debug.assert(methods_token == .array_begin);
-
-    while (true) {
-        const method_token = try scanner.next();
-        switch (method_token) {
-            .object_begin => {
-                try methods.append(allocator, try self.parseMethod(.method, allocator, scanner));
-            },
-            .array_end => break,
-            .end_of_document => unreachable,
-            else => {},
-        }
-    }
-
-    return methods.toOwnedSlice(allocator);
-}
-
-fn parseClassProperties(self: *const DocDatabase, allocator: Allocator, scanner: *Scanner) ![]Entry {
-    var properties: ArrayList(Entry) = .empty;
-    defer properties.deinit(allocator);
-
-    const properties_token = try scanner.next();
-    std.debug.assert(properties_token == .array_begin);
-
-    while (true) {
-        const property_token = try scanner.next();
-        switch (property_token) {
-            .object_begin => {
-                try properties.append(allocator, try self.parseProperty(allocator, scanner));
-            },
-            .array_end => break,
-            .end_of_document => unreachable,
-            else => {},
-        }
-    }
-
-    return properties.toOwnedSlice(allocator);
-}
+const MethodKey = enum {
+    name,
+};
 
 const PropertyKey = enum {
     name,
@@ -272,50 +234,6 @@ const PropertyKey = enum {
     getter,
     setter,
 };
-
-fn parseProperty(self: *const DocDatabase, allocator: Allocator, scanner: *Scanner) !Entry {
-    _ = self; // autofix
-
-    var property: Entry = .{
-        .name = undefined,
-        .key = undefined,
-        .kind = .property,
-    };
-
-    while (true) {
-        const token = try scanner.next();
-        switch (token) {
-            .string => |s| {
-                std.debug.assert(scanner.string_is_object_key);
-                const property_key = std.meta.stringToEnum(PropertyKey, s) orelse {
-                    try scanner.skipValue();
-                    continue;
-                };
-
-                switch (property_key) {
-                    .name => {
-                        const name = try scanner.next();
-                        std.debug.assert(name == .string);
-
-                        property.name = try allocator.dupe(u8, name.string);
-                        property.key = property.name;
-                    },
-                    .type => {
-                        const @"type" = try scanner.next();
-                        std.debug.assert(@"type" == .string);
-
-                        property.signature = try std.fmt.allocPrint(allocator, ": {s}", .{@"type".string});
-                    },
-                    else => try scanner.skipValue(),
-                }
-            },
-            .object_end => break,
-            else => {},
-        }
-    }
-
-    return property;
-}
 
 const ConstantKey = enum {
     name,
@@ -330,35 +248,64 @@ const EnumKey = enum {
 };
 
 const kind_key_map: std.StaticStringMap(type) = .initComptime(.{
+    .{ @tagName(EntryKind.method), MethodKey },
     .{ @tagName(EntryKind.constant), ConstantKey },
     .{ @tagName(EntryKind.signal), SignalKey },
     .{ @tagName(EntryKind.enum_value), EnumKey },
+    .{ @tagName(EntryKind.property), PropertyKey },
+    .{ @tagName(EntryKind.global_function), MethodKey },
+});
+
+const constant_handler_map: std.StaticStringMap(*const fn (Allocator, *Entry, *Scanner) anyerror!void) = .initComptime(.{
+    .{ @tagName(ConstantKey.name), handleEntryName },
+});
+
+const method_handler_map: std.StaticStringMap(*const fn (Allocator, *Entry, *Scanner) anyerror!void) = .initComptime(.{
+    .{ @tagName(MethodKey.name), handleEntryName },
+});
+
+const signal_handler_map: std.StaticStringMap(*const fn (Allocator, *Entry, *Scanner) anyerror!void) = .initComptime(.{
+    .{ @tagName(SignalKey.name), handleEntryName },
+});
+
+const enum_value_handler_map: std.StaticStringMap(*const fn (Allocator, *Entry, *Scanner) anyerror!void) = .initComptime(.{
+    .{ @tagName(EnumKey.name), handleEntryName },
+});
+
+const property_handler_map: std.StaticStringMap(*const fn (Allocator, *Entry, *Scanner) anyerror!void) = .initComptime(.{
+    .{ @tagName(PropertyKey.name), handleEntryName },
+    .{ @tagName(PropertyKey.type), handlePropertyType },
+    .{ @tagName(PropertyKey.getter), skipValue },
+    .{ @tagName(PropertyKey.setter), skipValue },
 });
 
 const kind_handler_map: std.StaticStringMap(std.StaticStringMap(*const fn (Allocator, *Entry, *Scanner) anyerror!void)) = .initComptime(.{
     .{ @tagName(EntryKind.constant), constant_handler_map },
     .{ @tagName(EntryKind.signal), signal_handler_map },
     .{ @tagName(EntryKind.enum_value), enum_value_handler_map },
+    .{ @tagName(EntryKind.property), property_handler_map },
+    .{ @tagName(EntryKind.method), method_handler_map },
+    .{ @tagName(EntryKind.global_function), method_handler_map },
 });
 
-const constant_handler_map: std.StaticStringMap(*const fn (Allocator, *Entry, *Scanner) anyerror!void) = .initComptime(.{
-    .{ @tagName(ConstantKey.name), handleNameKey },
-});
-
-const signal_handler_map: std.StaticStringMap(*const fn (Allocator, *Entry, *Scanner) anyerror!void) = .initComptime(.{
-    .{ @tagName(SignalKey.name), handleNameKey },
-});
-
-const enum_value_handler_map: std.StaticStringMap(*const fn (Allocator, *Entry, *Scanner) anyerror!void) = .initComptime(.{
-    .{ @tagName(EnumKey.name), handleNameKey },
-});
-
-fn handleNameKey(allocator: Allocator, entry: *Entry, scanner: *Scanner) anyerror!void {
+fn handleEntryName(allocator: Allocator, entry: *Entry, scanner: *Scanner) anyerror!void {
     const name = try scanner.next();
     std.debug.assert(name == .string);
 
     entry.name = try allocator.dupe(u8, name.string);
     entry.key = entry.name;
+}
+
+fn handlePropertyType(allocator: Allocator, entry: *Entry, scanner: *Scanner) anyerror!void {
+    const @"type" = try scanner.next();
+    std.debug.assert(@"type" == .string);
+    entry.signature = try std.fmt.allocPrint(allocator, ": {s}", .{@"type".string});
+}
+
+fn skipValue(allocator: Allocator, entry: *Entry, scanner: *Scanner) anyerror!void {
+    _ = allocator;
+    _ = entry;
+    try scanner.skipValue();
 }
 
 fn parseEntry(self: *const DocDatabase, comptime kind: EntryKind, allocator: Allocator, scanner: *Scanner) !Entry {
@@ -370,7 +317,7 @@ fn parseEntry(self: *const DocDatabase, comptime kind: EntryKind, allocator: All
         .kind = kind,
     };
 
-    const KeyType = kind_key_map.get(@tagName(kind)) orelse comptime unreachable;
+    const KeyType = kind_key_map.get(@tagName(kind)) orelse @compileError("No key type found for kind: " ++ @tagName(kind));
     const handlers = kind_handler_map.get(@tagName(kind)) orelse std.debug.panic("No handlers found for kind: {}", .{kind});
 
     while (true) {
@@ -383,7 +330,12 @@ fn parseEntry(self: *const DocDatabase, comptime kind: EntryKind, allocator: All
                     continue;
                 };
 
-                const handler = handlers.get(@tagName(key)) orelse std.debug.panic("No handler found for key ({}): {}", .{ kind, key });
+                const handler = handlers.get(@tagName(key)) orelse {
+                    parser_log.warn("No handler found for key: {s}.{s}", .{ @tagName(kind), @tagName(key) });
+                    try scanner.skipValue();
+                    continue;
+                };
+
                 try handler(allocator, &entry, scanner);
             },
             .object_end => break,
@@ -426,53 +378,6 @@ fn nextTokenToMarkdownAlloc(allocator: Allocator, scanner: *Scanner) ![]const u8
     };
 
     return try bbcodeToMarkdown(allocator, value);
-}
-
-const MethodKey = enum {
-    name,
-};
-
-fn parseMethod(self: *const DocDatabase, comptime kind: EntryKind, allocator: Allocator, scanner: *Scanner) !Entry {
-    _ = self; // autofix
-
-    switch (kind) {
-        .method, .global_function => {},
-        else => comptime unreachable,
-    }
-
-    var method: Entry = .{
-        .name = undefined,
-        .key = undefined,
-        .kind = kind,
-    };
-
-    while (true) {
-        const token = try scanner.next();
-        switch (token) {
-            .string => |s| {
-                std.debug.assert(scanner.string_is_object_key);
-                const method_key = std.meta.stringToEnum(MethodKey, s) orelse {
-                    try scanner.skipValue();
-                    continue;
-                };
-
-                switch (method_key) {
-                    .name => {
-                        const name = try scanner.next();
-                        std.debug.assert(name == .string);
-
-                        method.name = try allocator.dupe(u8, name.string);
-                        method.key = method.name;
-                    },
-                }
-            },
-            .object_end => break,
-            .end_of_document => unreachable,
-            else => {},
-        }
-    }
-
-    return method;
 }
 
 pub fn lookupSymbolExact(self: DocDatabase, symbol: []const u8) DocDatabase.Error!Entry {
