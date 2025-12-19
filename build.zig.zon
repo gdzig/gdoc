@@ -17,8 +17,8 @@
             .hash = "zli-4.3.0-LeUjpmbfAACPnRj2nzbzaLMNfTkq-LEWSC9EfOcnFxjl",
         },
         .zigdown = .{
-            .url = "https://github.com/JacobCrabill/zigdown/archive/refs/tags/v1.1.1.tar.gz",
-            .hash = "zigdown-1.1.1-M06JTwOCFQDm8gn9mH4mTRR-tPfOJR5tEydBwwGQ3Wfp",
+            .url = "https://github.com/JacobCrabill/zigdown/archive/refs/tags/v1.2.0.tar.gz",
+            .hash = "zigdown-1.2.0-M06JT7-lFQCrQRNGBipFjSt-qAvFSLgy8-f-D4VFAeOi",
         },
     },
     .paths = .{
