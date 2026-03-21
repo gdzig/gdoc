@@ -1,0 +1,336 @@
+const std = @import("std");
+const Allocator = std.mem.Allocator;
+const xml = @import("xml");
+
+const docs_url = "https://docs.godotengine.org/en/stable";
+
+pub const Tutorial = struct {
+    title: []const u8,
+    url: []const u8,
+};
+
+pub const MemberDoc = struct {
+    name: []const u8,
+    description: ?[]const u8 = null,
+};
+
+pub const ClassDoc = struct {
+    name: []const u8,
+    inherits: ?[]const u8 = null,
+    brief_description: ?[]const u8 = null,
+    description: ?[]const u8 = null,
+    tutorials: ?[]Tutorial = null,
+    methods: ?[]MemberDoc = null,
+    properties: ?[]MemberDoc = null,
+    signals: ?[]MemberDoc = null,
+    constants: ?[]MemberDoc = null,
+};
+
+pub const ParseError = error{
+    MalformedXml,
+    UnexpectedElement,
+    MissingClassElement,
+    MissingNameAttribute,
+    OutOfMemory,
+    ReadFailed,
+};
+
+pub fn parseClassDoc(allocator: Allocator, xml_content: []const u8) ParseError!ClassDoc {
+    var static_reader: xml.Reader.Static = .init(allocator, xml_content, .{
+        .namespace_aware = false,
+    });
+    defer static_reader.deinit();
+    const reader = &static_reader.interface;
+
+    var doc: ClassDoc = .{ .name = "" };
+    var tutorials: std.ArrayListUnmanaged(Tutorial) = .empty;
+    defer tutorials.deinit(allocator);
+    var methods: std.ArrayListUnmanaged(MemberDoc) = .empty;
+    defer methods.deinit(allocator);
+    var properties: std.ArrayListUnmanaged(MemberDoc) = .empty;
+    defer properties.deinit(allocator);
+    var signals: std.ArrayListUnmanaged(MemberDoc) = .empty;
+    defer signals.deinit(allocator);
+    var constants: std.ArrayListUnmanaged(MemberDoc) = .empty;
+    defer constants.deinit(allocator);
+
+    var found_class = false;
+
+    while (true) {
+        const node = reader.read() catch return ParseError.MalformedXml;
+        switch (node) {
+            .eof => break,
+            .xml_declaration => continue,
+            .element_start => {
+                const name = reader.elementName();
+                if (std.mem.eql(u8, name, "class")) {
+                    found_class = true;
+                    doc.name = try getAttributeAlloc(allocator, reader, "name") orelse return ParseError.MissingNameAttribute;
+                    doc.inherits = try getAttributeAlloc(allocator, reader, "inherits");
+                } else if (std.mem.eql(u8, name, "brief_description")) {
+                    doc.brief_description = try readTextContent(allocator, reader);
+                } else if (std.mem.eql(u8, name, "description") and found_class) {
+                    doc.description = try readTextContent(allocator, reader);
+                } else if (std.mem.eql(u8, name, "link")) {
+                    const title = try getAttributeAlloc(allocator, reader, "title") orelse try allocator.dupe(u8, "");
+                    const url_raw = try readTextContent(allocator, reader) orelse try allocator.dupe(u8, "");
+                    const url = try expandDocsUrl(allocator, url_raw);
+                    if (url.ptr != url_raw.ptr) {
+                        allocator.free(url_raw);
+                    }
+                    try tutorials.append(allocator,.{ .title = title, .url = url });
+                } else if (std.mem.eql(u8, name, "method")) {
+                    const method_name = try getAttributeAlloc(allocator, reader, "name") orelse continue;
+                    const desc = try readNestedDescription(allocator, reader, "method");
+                    try methods.append(allocator,.{ .name = method_name, .description = desc });
+                } else if (std.mem.eql(u8, name, "member")) {
+                    const member_name = try getAttributeAlloc(allocator, reader, "name") orelse continue;
+                    const desc = try readTextContent(allocator, reader);
+                    try properties.append(allocator,.{ .name = member_name, .description = desc });
+                } else if (std.mem.eql(u8, name, "signal")) {
+                    const signal_name = try getAttributeAlloc(allocator, reader, "name") orelse continue;
+                    const desc = try readNestedDescription(allocator, reader, "signal");
+                    try signals.append(allocator,.{ .name = signal_name, .description = desc });
+                } else if (std.mem.eql(u8, name, "constant")) {
+                    const constant_name = try getAttributeAlloc(allocator, reader, "name") orelse continue;
+                    const desc = try readTextContent(allocator, reader);
+                    try constants.append(allocator,.{ .name = constant_name, .description = desc });
+                }
+            },
+            else => continue,
+        }
+    }
+
+    if (!found_class) return ParseError.MissingClassElement;
+
+    doc.tutorials = if (tutorials.items.len > 0) try tutorials.toOwnedSlice(allocator) else null;
+    doc.methods = if (methods.items.len > 0) try methods.toOwnedSlice(allocator) else null;
+    doc.properties = if (properties.items.len > 0) try properties.toOwnedSlice(allocator) else null;
+    doc.signals = if (signals.items.len > 0) try signals.toOwnedSlice(allocator) else null;
+    doc.constants = if (constants.items.len > 0) try constants.toOwnedSlice(allocator) else null;
+
+    return doc;
+}
+
+pub fn freeClassDoc(allocator: Allocator, doc: ClassDoc) void {
+    allocator.free(doc.name);
+    if (doc.inherits) |s| allocator.free(s);
+    if (doc.brief_description) |s| allocator.free(s);
+    if (doc.description) |s| allocator.free(s);
+
+    if (doc.tutorials) |tutorials| {
+        for (tutorials) |t| {
+            allocator.free(t.title);
+            allocator.free(t.url);
+        }
+        allocator.free(tutorials);
+    }
+
+    inline for (.{ "methods", "properties", "signals", "constants" }) |field| {
+        if (@field(doc, field)) |members| {
+            for (members) |m| {
+                allocator.free(m.name);
+                if (m.description) |d| allocator.free(d);
+            }
+            allocator.free(members);
+        }
+    }
+}
+
+fn getAttributeAlloc(allocator: Allocator, reader: *xml.Reader, name: []const u8) Allocator.Error!?[]const u8 {
+    const idx = reader.attributeIndex(name) orelse return null;
+    return try reader.attributeValueAlloc(allocator, idx);
+}
+
+fn readTextContent(allocator: Allocator, reader: *xml.Reader) ParseError!?[]const u8 {
+    var text_buf: std.Io.Writer.Allocating = .init(allocator);
+    defer text_buf.deinit();
+
+    var depth: usize = 1;
+    while (depth > 0) {
+        const node = reader.read() catch return ParseError.MalformedXml;
+        switch (node) {
+            .eof => break,
+            .element_start => depth += 1,
+            .element_end => depth -= 1,
+            .text => {
+                text_buf.writer.writeAll(reader.textRaw()) catch return ParseError.OutOfMemory;
+            },
+            else => continue,
+        }
+    }
+
+    const written = text_buf.written();
+    if (written.len == 0) return null;
+
+    const trimmed = std.mem.trim(u8, written, " \t\r\n");
+    if (trimmed.len == 0) return null;
+
+    return try allocator.dupe(u8, trimmed);
+}
+
+fn readNestedDescription(allocator: Allocator, reader: *xml.Reader, container_element: []const u8) ParseError!?[]const u8 {
+    // Read through the container element looking for a nested <description> element.
+    var depth: usize = 1;
+    while (depth > 0) {
+        const node = reader.read() catch return ParseError.MalformedXml;
+        switch (node) {
+            .eof => break,
+            .element_start => {
+                const name = reader.elementName();
+                if (depth == 1 and std.mem.eql(u8, name, "description")) {
+                    return try readTextContent(allocator, reader);
+                }
+                depth += 1;
+            },
+            .element_end => {
+                const name = reader.elementName();
+                if (depth == 1 and std.mem.eql(u8, name, container_element)) {
+                    break;
+                }
+                depth -= 1;
+            },
+            else => continue,
+        }
+    }
+    return null;
+}
+
+fn expandDocsUrl(allocator: Allocator, url: []const u8) Allocator.Error![]const u8 {
+    const prefix = "$DOCS_URL";
+    if (std.mem.startsWith(u8, url, prefix)) {
+        return try std.fmt.allocPrint(allocator, "{s}{s}", .{ docs_url, url[prefix.len..] });
+    }
+    return url;
+}
+
+// Tests
+const test_xml =
+    \\<?xml version="1.0" encoding="UTF-8" ?>
+    \\<class name="Node2D" inherits="CanvasItem" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+    \\    <brief_description>A 2D game object.</brief_description>
+    \\    <description>Node2D is the base class for 2D.</description>
+    \\    <tutorials>
+    \\        <link title="Custom drawing in 2D">$DOCS_URL/tutorials/2d/custom_drawing.html</link>
+    \\        <link title="All 2D Demos">https://github.com/godotengine/godot-demo-projects/tree/master/2d</link>
+    \\    </tutorials>
+    \\    <methods>
+    \\        <method name="apply_scale">
+    \\            <return type="void" />
+    \\            <param index="0" name="ratio" type="Vector2" />
+    \\            <description>Multiplies the current scale by the ratio vector.</description>
+    \\        </method>
+    \\    </methods>
+    \\    <members>
+    \\        <member name="position" type="Vector2" setter="set_position" getter="get_position" default="Vector2(0, 0)">
+    \\Position, relative to the node's parent.
+    \\        </member>
+    \\    </members>
+    \\    <signals>
+    \\        <signal name="some_signal">
+    \\            <description>Emitted when something happens.</description>
+    \\        </signal>
+    \\    </signals>
+    \\    <constants>
+    \\        <constant name="MAX_VALUE" value="100">
+    \\Maximum allowed value.
+    \\        </constant>
+    \\    </constants>
+    \\</class>
+;
+
+test "parses class name and inherits" {
+    const allocator = std.testing.allocator;
+    const doc = try parseClassDoc(allocator, test_xml);
+    defer freeClassDoc(allocator, doc);
+
+    try std.testing.expectEqualStrings("Node2D", doc.name);
+    try std.testing.expectEqualStrings("CanvasItem", doc.inherits.?);
+}
+
+test "parses brief_description and description" {
+    const allocator = std.testing.allocator;
+    const doc = try parseClassDoc(allocator, test_xml);
+    defer freeClassDoc(allocator, doc);
+
+    try std.testing.expectEqualStrings("A 2D game object.", doc.brief_description.?);
+    try std.testing.expectEqualStrings("Node2D is the base class for 2D.", doc.description.?);
+}
+
+test "parses tutorials with $DOCS_URL expansion" {
+    const allocator = std.testing.allocator;
+    const doc = try parseClassDoc(allocator, test_xml);
+    defer freeClassDoc(allocator, doc);
+
+    const tutorials = doc.tutorials.?;
+    try std.testing.expectEqual(2, tutorials.len);
+    try std.testing.expectEqualStrings("Custom drawing in 2D", tutorials[0].title);
+    try std.testing.expectEqualStrings(
+        "https://docs.godotengine.org/en/stable/tutorials/2d/custom_drawing.html",
+        tutorials[0].url,
+    );
+}
+
+test "external tutorial URLs left unchanged" {
+    const allocator = std.testing.allocator;
+    const doc = try parseClassDoc(allocator, test_xml);
+    defer freeClassDoc(allocator, doc);
+
+    const tutorials = doc.tutorials.?;
+    try std.testing.expectEqualStrings("All 2D Demos", tutorials[1].title);
+    try std.testing.expectEqualStrings(
+        "https://github.com/godotengine/godot-demo-projects/tree/master/2d",
+        tutorials[1].url,
+    );
+}
+
+test "parses methods with descriptions" {
+    const allocator = std.testing.allocator;
+    const doc = try parseClassDoc(allocator, test_xml);
+    defer freeClassDoc(allocator, doc);
+
+    const methods = doc.methods.?;
+    try std.testing.expectEqual(1, methods.len);
+    try std.testing.expectEqualStrings("apply_scale", methods[0].name);
+    try std.testing.expectEqualStrings("Multiplies the current scale by the ratio vector.", methods[0].description.?);
+}
+
+test "parses properties from members element" {
+    const allocator = std.testing.allocator;
+    const doc = try parseClassDoc(allocator, test_xml);
+    defer freeClassDoc(allocator, doc);
+
+    const props = doc.properties.?;
+    try std.testing.expectEqual(1, props.len);
+    try std.testing.expectEqualStrings("position", props[0].name);
+    try std.testing.expectEqualStrings("Position, relative to the node's parent.", props[0].description.?);
+}
+
+test "parses signals with descriptions" {
+    const allocator = std.testing.allocator;
+    const doc = try parseClassDoc(allocator, test_xml);
+    defer freeClassDoc(allocator, doc);
+
+    const sigs = doc.signals.?;
+    try std.testing.expectEqual(1, sigs.len);
+    try std.testing.expectEqualStrings("some_signal", sigs[0].name);
+    try std.testing.expectEqualStrings("Emitted when something happens.", sigs[0].description.?);
+}
+
+test "parses constants with descriptions" {
+    const allocator = std.testing.allocator;
+    const doc = try parseClassDoc(allocator, test_xml);
+    defer freeClassDoc(allocator, doc);
+
+    const consts = doc.constants.?;
+    try std.testing.expectEqual(1, consts.len);
+    try std.testing.expectEqualStrings("MAX_VALUE", consts[0].name);
+    try std.testing.expectEqualStrings("Maximum allowed value.", consts[0].description.?);
+}
+
+test "freeClassDoc doesn't leak" {
+    const allocator = std.testing.allocator;
+    const doc = try parseClassDoc(allocator, test_xml);
+    freeClassDoc(allocator, doc);
+    // testing allocator will catch leaks
+}

@@ -3,3 +3,4 @@ zig-out/
 *.o
 extension_api.json
 docs/plans/
+.worktrees/

@@ -21,6 +21,11 @@ pub const EntryKind = enum {
     signal,
 };
 
+pub const Tutorial = struct {
+    title: []const u8,
+    url: []const u8,
+};
+
 pub const Entry = struct {
     key: []const u8,
     name: []const u8,
@@ -30,6 +35,7 @@ pub const Entry = struct {
     brief_description: ?[]const u8 = null,
     signature: ?[]const u8 = null,
     members: ?[]usize = null,
+    tutorials: ?[]const Tutorial = null,
 };
 
 const RootState = enum {
@@ -419,6 +425,15 @@ fn generateMarkdownForEntry(self: DocDatabase, allocator: Allocator, entry: Entr
 
     if (entry.description) |desc| {
         try writer.print("\n## Description\n\n{s}\n", .{desc});
+    }
+
+    if (entry.tutorials) |tutorials| {
+        if (tutorials.len > 0) {
+            try writer.writeAll("\n## Tutorials\n\n");
+            for (tutorials) |tutorial| {
+                try writer.print("- [{s}]({s})\n", .{ tutorial.title, tutorial.url });
+            }
+        }
     }
 
     if (entry.members) |member_indices| {
@@ -1260,6 +1275,41 @@ test "generateMarkdownForSymbol for class with members" {
     const writer = &file_writer.interface;
 
     try db.generateMarkdownForSymbol(allocator, "Node2D", writer);
+    try writer.flush();
+}
+
+test "generateMarkdownForSymbol for class with tutorials" {
+    const allocator = std.testing.allocator;
+
+    var db = DocDatabase{
+        .symbols = StringArrayHashMap(Entry).empty,
+    };
+    defer db.symbols.deinit(allocator);
+
+    const tutorials = [_]Tutorial{
+        .{ .title = "Custom drawing in 2D", .url = "https://docs.godotengine.org/en/stable/tutorials/2d/custom_drawing_in_2d.html" },
+        .{ .title = "All 2D Demos", .url = "https://github.com/godotengine/godot-demo-projects/tree/master/2d" },
+    };
+
+    const entry = Entry{
+        .key = "Sprite2D",
+        .name = "Sprite2D",
+        .kind = .class,
+        .brief_description = "General-purpose sprite node.",
+        .description = "A node that displays a 2D texture.",
+        .tutorials = &tutorials,
+    };
+    try db.symbols.put(allocator, "Sprite2D", entry);
+
+    // Write snapshot
+    var file = try std.fs.cwd().createFile("snapshots/class_with_tutorials.md", .{});
+    defer file.close();
+
+    var buf: [4096]u8 = undefined;
+    var file_writer = file.writer(&buf);
+    const writer = &file_writer.interface;
+
+    try db.generateMarkdownForSymbol(allocator, "Sprite2D", writer);
     try writer.flush();
 }
 

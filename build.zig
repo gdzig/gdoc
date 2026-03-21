@@ -25,6 +25,11 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     }).module("zigdown");
 
+    const zig_xml = b.dependency("xml", .{
+        .target = target,
+        .optimize = optimize,
+    }).module("xml");
+
     const mod = b.addModule("gdoc", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
@@ -32,6 +37,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "bbcodez", .module = bbcodez },
             .{ .name = "known-folders", .module = known_folders },
             .{ .name = "zigdown", .module = zigdown },
+            .{ .name = "xml", .module = zig_xml },
         },
     });
     mod.addOptions("build_options", build_options);
@@ -67,12 +73,14 @@ pub fn build(b: *std.Build) void {
     });
 
     const run_mod_tests = b.addRunArtifact(mod_tests);
+    run_mod_tests.setEnvironmentVariable("GDOC_NO_XML", "1");
 
     const exe_tests = b.addTest(.{
         .root_module = exe.root_module,
     });
 
     const run_exe_tests = b.addRunArtifact(exe_tests);
+    run_exe_tests.setEnvironmentVariable("GDOC_NO_XML", "1");
 
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_mod_tests.step);
