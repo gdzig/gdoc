@@ -1044,6 +1044,133 @@ test "loadFromXmlDir converts BBCode descriptions to Markdown" {
     try std.testing.expect(std.mem.indexOf(u8, entry.description.?, "`code`") != null);
 }
 
+test "XML dir to markdown roundtrip" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const tmp_path = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(tmp_path);
+
+    // Write a realistic XML doc
+    const xml_content =
+        \\<?xml version="1.0" encoding="UTF-8" ?>
+        \\<class name="TestClass" inherits="RefCounted">
+        \\    <brief_description>A test class.</brief_description>
+        \\    <description>A class for testing.</description>
+        \\    <tutorials>
+        \\        <link title="Test Tutorial">https://example.com</link>
+        \\    </tutorials>
+        \\    <constructors>
+        \\        <constructor name="TestClass">
+        \\            <return type="TestClass" />
+        \\            <description>Default constructor.</description>
+        \\        </constructor>
+        \\    </constructors>
+        \\    <methods>
+        \\        <method name="do_thing" qualifiers="const">
+        \\            <return type="bool" />
+        \\            <param index="0" name="value" type="int" />
+        \\            <description>Does a thing.</description>
+        \\        </method>
+        \\    </methods>
+        \\    <members>
+        \\        <member name="speed" type="float" default="1.0">Movement speed.</member>
+        \\    </members>
+        \\    <operators>
+        \\        <operator name="operator *">
+        \\            <return type="TestClass" />
+        \\            <param index="0" name="right" type="float" />
+        \\            <description>Multiplies by a scalar.</description>
+        \\        </operator>
+        \\    </operators>
+        \\    <constants>
+        \\        <constant name="MAX_SPEED" value="100">Maximum speed.</constant>
+        \\    </constants>
+        \\</class>
+    ;
+
+    // Write XML to a subdir
+    const xml_dir = try std.fmt.allocPrint(allocator, "{s}/xml", .{tmp_path});
+    defer allocator.free(xml_dir);
+    try std.fs.makeDirAbsolute(xml_dir);
+    const xml_path = try std.fmt.allocPrint(allocator, "{s}/TestClass.xml", .{xml_dir});
+    defer allocator.free(xml_path);
+    try std.fs.cwd().writeFile(.{ .sub_path = xml_path, .data = xml_content });
+
+    // Load from XML
+    var arena_alloc = std.heap.ArenaAllocator.init(allocator);
+    defer arena_alloc.deinit();
+    const db = try DocDatabase.loadFromXmlDir(arena_alloc.allocator(), allocator, xml_dir);
+
+    // Generate markdown cache
+    const cache_dir = try std.fmt.allocPrint(allocator, "{s}/cache", .{tmp_path});
+    defer allocator.free(cache_dir);
+    try cache.generateMarkdownCache(allocator, db, cache_dir);
+
+    // Read back the class markdown
+    var output: std.Io.Writer.Allocating = .init(allocator);
+    defer output.deinit();
+    try cache.readSymbolMarkdown(allocator, "TestClass", cache_dir, &output.writer);
+    const written = output.written();
+
+    // Verify key content
+    try std.testing.expect(std.mem.indexOf(u8, written, "# TestClass") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "*Inherits: RefCounted*") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "## Tutorials") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "## Constructors") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "## Methods") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "## Properties") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "## Operators") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "## Constants") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "do_thing") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "speed") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "operator *") != null);
+}
+
+test "loadFromXmlDir skips malformed XML files" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const tmp_path = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(tmp_path);
+
+    try tmp_dir.dir.writeFile(.{ .sub_path = "Bad.xml", .data = "<?xml version=\"1.0\" ?>\n<class name=\"Bad\"><broken" });
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const db = try DocDatabase.loadFromXmlDir(arena.allocator(), allocator, tmp_path);
+    // Bad file should be skipped, resulting in empty database
+    try std.testing.expectEqual(@as(usize, 0), db.symbols.count());
+}
+
+test "lookupSymbolExact returns SymbolNotFound for missing symbol in XML database" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const tmp_path = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(tmp_path);
+
+    try tmp_dir.dir.writeFile(.{ .sub_path = "Node.xml", .data =
+        \\<?xml version="1.0" encoding="UTF-8" ?>
+        \\<class name="Node" inherits="Object">
+        \\    <brief_description>Base class.</brief_description>
+        \\    <description>Base node class.</description>
+        \\</class>
+    });
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const db = try DocDatabase.loadFromXmlDir(arena.allocator(), allocator, tmp_path);
+    const result = db.lookupSymbolExact("NonExistent");
+    try std.testing.expectError(DocDatabase.Error.SymbolNotFound, result);
+}
+
 const std = @import("std");
 const ArenaAllocator = std.heap.ArenaAllocator;
 const Allocator = std.mem.Allocator;
@@ -1052,4 +1179,5 @@ const ArrayList = std.ArrayListUnmanaged;
 const Writer = std.Io.Writer;
 
 const bbcodez = @import("bbcodez");
+const cache = @import("cache.zig");
 const XmlDocParser = @import("XmlDocParser.zig");
