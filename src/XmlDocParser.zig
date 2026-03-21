@@ -94,8 +94,15 @@ pub fn parseClassDoc(allocator: Allocator, xml_content: []const u8) ParseError!C
                     try methods.append(allocator, method_doc);
                 } else if (std.mem.eql(u8, name, "member")) {
                     const member_name = try getAttributeAlloc(allocator, reader, "name") orelse continue;
+                    const member_type = try getAttributeAlloc(allocator, reader, "type");
+                    const member_default = try getAttributeAlloc(allocator, reader, "default");
                     const desc = try readTextContent(allocator, reader);
-                    try properties.append(allocator,.{ .name = member_name, .description = desc });
+                    try properties.append(allocator, .{
+                        .name = member_name,
+                        .description = desc,
+                        .return_type = member_type,
+                        .default_value = member_default,
+                    });
                 } else if (std.mem.eql(u8, name, "signal")) {
                     const signal_name = try getAttributeAlloc(allocator, reader, "name") orelse continue;
                     const desc = try readNestedDescription(allocator, reader, "signal");
@@ -375,6 +382,17 @@ test "parses properties from members element" {
     try std.testing.expectEqual(1, props.len);
     try std.testing.expectEqualStrings("position", props[0].name);
     try std.testing.expectEqualStrings("Position, relative to the node's parent.", props[0].description.?);
+}
+
+test "parses property default value" {
+    const allocator = std.testing.allocator;
+    const doc = try parseClassDoc(allocator, test_xml);
+    defer freeClassDoc(allocator, doc);
+
+    const props = doc.properties.?;
+    try std.testing.expectEqual(1, props.len);
+    try std.testing.expectEqualStrings("Vector2(0, 0)", props[0].default_value.?);
+    try std.testing.expectEqualStrings("Vector2", props[0].return_type.?);
 }
 
 test "parses signals with descriptions" {
