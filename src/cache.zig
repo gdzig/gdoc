@@ -75,17 +75,16 @@ pub fn readSymbolMarkdown(allocator: Allocator, symbol: []const u8, cache_path: 
     const symbol_path = try resolveSymbolPath(allocator, cache_path, symbol);
     defer allocator.free(symbol_path);
 
-    const symbol_file = std.fs.openFileAbsolute(symbol_path, .{}) catch |err| switch (err) {
+    const file = std.fs.openFileAbsolute(symbol_path, .{}) catch |err| switch (err) {
         error.FileNotFound => return error.SymbolNotFound,
         else => return err,
     };
-    defer symbol_file.close();
+    defer file.close();
 
-    var buf: [4096]u8 = undefined;
-    var file_reader = symbol_file.reader(&buf);
-    var reader = &file_reader.interface;
+    const content = try file.readToEndAlloc(allocator, 1024 * 1024);
+    defer allocator.free(content);
 
-    _ = try reader.stream(output, .unlimited);
+    try output.writeAll(content);
 }
 
 pub fn generateMarkdownCache(allocator: Allocator, db: DocDatabase, cache_path: []const u8) !void {
