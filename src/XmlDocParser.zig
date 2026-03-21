@@ -9,9 +9,19 @@ pub const Tutorial = struct {
     url: []const u8,
 };
 
+pub const ParamDoc = struct {
+    name: []const u8,
+    type: []const u8,
+    default_value: ?[]const u8 = null,
+};
+
 pub const MemberDoc = struct {
     name: []const u8,
     description: ?[]const u8 = null,
+    qualifiers: ?[]const u8 = null,
+    default_value: ?[]const u8 = null,
+    return_type: ?[]const u8 = null,
+    params: ?[]ParamDoc = null,
 };
 
 pub const ClassDoc = struct {
@@ -80,9 +90,8 @@ pub fn parseClassDoc(allocator: Allocator, xml_content: []const u8) ParseError!C
                     }
                     try tutorials.append(allocator,.{ .title = title, .url = url });
                 } else if (std.mem.eql(u8, name, "method")) {
-                    const method_name = try getAttributeAlloc(allocator, reader, "name") orelse continue;
-                    const desc = try readNestedDescription(allocator, reader, "method");
-                    try methods.append(allocator,.{ .name = method_name, .description = desc });
+                    const method_doc = try parseMethodElement(allocator, reader);
+                    try methods.append(allocator, method_doc);
                 } else if (std.mem.eql(u8, name, "member")) {
                     const member_name = try getAttributeAlloc(allocator, reader, "name") orelse continue;
                     const desc = try readTextContent(allocator, reader);
@@ -131,6 +140,17 @@ pub fn freeClassDoc(allocator: Allocator, doc: ClassDoc) void {
             for (members) |m| {
                 allocator.free(m.name);
                 if (m.description) |d| allocator.free(d);
+                if (m.qualifiers) |q| allocator.free(q);
+                if (m.default_value) |dv| allocator.free(dv);
+                if (m.return_type) |rt| allocator.free(rt);
+                if (m.params) |params| {
+                    for (params) |p| {
+                        allocator.free(p.name);
+                        allocator.free(p.type);
+                        if (p.default_value) |pdv| allocator.free(pdv);
+                    }
+                    allocator.free(params);
+                }
             }
             allocator.free(members);
         }
@@ -194,6 +214,57 @@ fn readNestedDescription(allocator: Allocator, reader: *xml.Reader, container_el
         }
     }
     return null;
+}
+
+fn parseMethodElement(allocator: Allocator, reader: *xml.Reader) ParseError!MemberDoc {
+    const method_name = try getAttributeAlloc(allocator, reader, "name") orelse return ParseError.MissingNameAttribute;
+    const qualifiers = try getAttributeAlloc(allocator, reader, "qualifiers");
+
+    var return_type: ?[]const u8 = null;
+    var description: ?[]const u8 = null;
+    var params: std.ArrayListUnmanaged(ParamDoc) = .empty;
+    defer params.deinit(allocator);
+
+    var depth: usize = 1;
+    while (depth > 0) {
+        const node = reader.read() catch return ParseError.MalformedXml;
+        switch (node) {
+            .eof => break,
+            .element_start => {
+                const name = reader.elementName();
+                if (depth == 1 and std.mem.eql(u8, name, "return")) {
+                    return_type = try getAttributeAlloc(allocator, reader, "type");
+                    depth += 1;
+                } else if (depth == 1 and std.mem.eql(u8, name, "param")) {
+                    const param_name = try getAttributeAlloc(allocator, reader, "name") orelse try allocator.dupe(u8, "");
+                    const param_type = try getAttributeAlloc(allocator, reader, "type") orelse try allocator.dupe(u8, "");
+                    const param_default = try getAttributeAlloc(allocator, reader, "default");
+                    try params.append(allocator, .{
+                        .name = param_name,
+                        .type = param_type,
+                        .default_value = param_default,
+                    });
+                    depth += 1;
+                } else if (depth == 1 and std.mem.eql(u8, name, "description")) {
+                    description = try readTextContent(allocator, reader);
+                } else {
+                    depth += 1;
+                }
+            },
+            .element_end => {
+                depth -= 1;
+            },
+            else => continue,
+        }
+    }
+
+    return .{
+        .name = method_name,
+        .description = description,
+        .qualifiers = qualifiers,
+        .return_type = return_type,
+        .params = if (params.items.len > 0) try params.toOwnedSlice(allocator) else null,
+    };
 }
 
 fn expandDocsUrl(allocator: Allocator, url: []const u8) Allocator.Error![]const u8 {
@@ -326,6 +397,50 @@ test "parses constants with descriptions" {
     try std.testing.expectEqual(1, consts.len);
     try std.testing.expectEqualStrings("MAX_VALUE", consts[0].name);
     try std.testing.expectEqualStrings("Maximum allowed value.", consts[0].description.?);
+}
+
+const test_xml_with_params =
+    \\<?xml version="1.0" encoding="UTF-8" ?>
+    \\<class name="Node2D" inherits="CanvasItem">
+    \\    <brief_description>A 2D game object.</brief_description>
+    \\    <description>Node2D is the base class for 2D.</description>
+    \\    <methods>
+    \\        <method name="get_angle_to" qualifiers="const">
+    \\            <return type="float" />
+    \\            <param index="0" name="point" type="Vector2" />
+    \\            <description>Returns the angle between the node and the point.</description>
+    \\        </method>
+    \\        <method name="move_local_x">
+    \\            <return type="void" />
+    \\            <param index="0" name="delta" type="float" />
+    \\            <param index="1" name="scaled" type="bool" default="false" />
+    \\            <description>Applies a local translation on the X axis.</description>
+    \\        </method>
+    \\    </methods>
+    \\</class>
+;
+
+test "parses method params and return type" {
+    const allocator = std.testing.allocator;
+    const doc = try parseClassDoc(allocator, test_xml_with_params);
+    defer freeClassDoc(allocator, doc);
+
+    const methods = doc.methods.?;
+    try std.testing.expectEqual(2, methods.len);
+
+    // First method: get_angle_to
+    try std.testing.expectEqualStrings("const", methods[0].qualifiers.?);
+    try std.testing.expectEqualStrings("float", methods[0].return_type.?);
+    const params0 = methods[0].params.?;
+    try std.testing.expectEqual(1, params0.len);
+    try std.testing.expectEqualStrings("point", params0[0].name);
+    try std.testing.expectEqualStrings("Vector2", params0[0].type);
+    try std.testing.expect(params0[0].default_value == null);
+
+    // Second method: move_local_x with default param
+    const params1 = methods[1].params.?;
+    try std.testing.expectEqual(2, params1.len);
+    try std.testing.expectEqualStrings("false", params1[1].default_value.?);
 }
 
 test "freeClassDoc doesn't leak" {
