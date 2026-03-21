@@ -25,6 +25,11 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     }).module("zigdown");
 
+    const zig_xml = b.dependency("xml", .{
+        .target = target,
+        .optimize = optimize,
+    }).module("xml");
+
     const mod = b.addModule("gdoc", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
@@ -32,6 +37,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "bbcodez", .module = bbcodez },
             .{ .name = "known-folders", .module = known_folders },
             .{ .name = "zigdown", .module = zigdown },
+            .{ .name = "xml", .module = zig_xml },
         },
     });
     mod.addOptions("build_options", build_options);
