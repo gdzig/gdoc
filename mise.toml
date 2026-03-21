@@ -1,7 +1,6 @@
 [tools]
 zig = "0.15.2"
 zls = "0.15.0"
-"ubi:steveyegge/beads" = { version = "latest", exe = "bd" }
 godot = "latest"
 git-cliff = "latest"
 usage = "latest"
