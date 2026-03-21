@@ -120,8 +120,15 @@ pub fn parseClassDoc(allocator: Allocator, xml_content: []const u8) ParseError!C
                     try operators.append(allocator, op_doc);
                 } else if (std.mem.eql(u8, name, "constant")) {
                     const constant_name = try getAttributeAlloc(allocator, reader, "name") orelse continue;
+                    const constant_value = try getAttributeAlloc(allocator, reader, "value");
+                    const constant_enum = try getAttributeAlloc(allocator, reader, "enum");
                     const desc = try readTextContent(allocator, reader);
-                    try constants.append(allocator,.{ .name = constant_name, .description = desc });
+                    try constants.append(allocator, .{
+                        .name = constant_name,
+                        .description = desc,
+                        .default_value = constant_value,
+                        .qualifiers = constant_enum,
+                    });
                 }
             },
             else => continue,
@@ -479,6 +486,36 @@ test "parses operators" {
     try std.testing.expectEqualStrings("operator +", ops[0].name);
     try std.testing.expectEqualStrings("Vector2", ops[0].return_type.?);
     try std.testing.expectEqual(1, ops[0].params.?.len);
+}
+
+const test_xml_with_enums =
+    \\<?xml version="1.0" encoding="UTF-8" ?>
+    \\<class name="Node">
+    \\    <brief_description>Base class.</brief_description>
+    \\    <description>Base node.</description>
+    \\    <constants>
+    \\        <constant name="NOTIFICATION_READY" value="13">Ready notification.</constant>
+    \\        <constant name="PROCESS_MODE_INHERIT" value="0" enum="ProcessMode">Inherits process mode.</constant>
+    \\        <constant name="PROCESS_MODE_ALWAYS" value="3" enum="ProcessMode">Always process.</constant>
+    \\    </constants>
+    \\</class>
+;
+
+test "parses constant value and enum attribute" {
+    const allocator = std.testing.allocator;
+    const doc = try parseClassDoc(allocator, test_xml_with_enums);
+    defer freeClassDoc(allocator, doc);
+
+    const consts = doc.constants.?;
+    try std.testing.expectEqual(3, consts.len);
+
+    // Regular constant — no enum
+    try std.testing.expectEqualStrings("13", consts[0].default_value.?);
+    try std.testing.expect(consts[0].qualifiers == null);
+
+    // Enum constant — enum name stored in qualifiers field
+    try std.testing.expectEqualStrings("0", consts[1].default_value.?);
+    try std.testing.expectEqualStrings("ProcessMode", consts[1].qualifiers.?);
 }
 
 const test_xml_with_params =
