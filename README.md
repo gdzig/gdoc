@@ -13,7 +13,7 @@ Perfect for terminal-first workflows and quick API reference checks while coding
 ## Why gdoc?
 
 - **Instant lookup** - Faster than switching to a browser or searching online docs
-- **Offline-first** - Uses your local Godot installation, works without internet
+- **Works offline** - After the first run, all docs are cached locally—no internet needed
 - **Readable output** - Converts Godot's BBCode docs to clean, formatted Markdown in your terminal
 
 ## Installation
@@ -70,7 +70,7 @@ This shows the class documentation with all its methods and properties. You can 
 
 ### How It Works
 
-When you run gdoc, it calls your local `godot --dump-extension-api-with-docs` to get the latest API documentation. The API is cached after the first run for speed.
+When you first run gdoc, it checks your local `godot --version` to determine your Godot version, then downloads the matching XML class documentation from GitHub. The docs are parsed and cached as Markdown for fast subsequent lookups.
 
 If you upgrade Godot or need to regenerate the cache:
 
