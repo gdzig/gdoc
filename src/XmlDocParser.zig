@@ -34,6 +34,8 @@ pub const ClassDoc = struct {
     properties: ?[]MemberDoc = null,
     signals: ?[]MemberDoc = null,
     constants: ?[]MemberDoc = null,
+    constructors: ?[]MemberDoc = null,
+    operators: ?[]MemberDoc = null,
 };
 
 pub const ParseError = error{
@@ -63,6 +65,10 @@ pub fn parseClassDoc(allocator: Allocator, xml_content: []const u8) ParseError!C
     defer signals.deinit(allocator);
     var constants: std.ArrayListUnmanaged(MemberDoc) = .empty;
     defer constants.deinit(allocator);
+    var constructors: std.ArrayListUnmanaged(MemberDoc) = .empty;
+    defer constructors.deinit(allocator);
+    var operators: std.ArrayListUnmanaged(MemberDoc) = .empty;
+    defer operators.deinit(allocator);
 
     var found_class = false;
 
@@ -104,9 +110,14 @@ pub fn parseClassDoc(allocator: Allocator, xml_content: []const u8) ParseError!C
                         .default_value = member_default,
                     });
                 } else if (std.mem.eql(u8, name, "signal")) {
-                    const signal_name = try getAttributeAlloc(allocator, reader, "name") orelse continue;
-                    const desc = try readNestedDescription(allocator, reader, "signal");
-                    try signals.append(allocator,.{ .name = signal_name, .description = desc });
+                    const signal_doc = try parseMethodElement(allocator, reader);
+                    try signals.append(allocator, signal_doc);
+                } else if (std.mem.eql(u8, name, "constructor")) {
+                    const ctor_doc = try parseMethodElement(allocator, reader);
+                    try constructors.append(allocator, ctor_doc);
+                } else if (std.mem.eql(u8, name, "operator")) {
+                    const op_doc = try parseMethodElement(allocator, reader);
+                    try operators.append(allocator, op_doc);
                 } else if (std.mem.eql(u8, name, "constant")) {
                     const constant_name = try getAttributeAlloc(allocator, reader, "name") orelse continue;
                     const desc = try readTextContent(allocator, reader);
@@ -124,6 +135,8 @@ pub fn parseClassDoc(allocator: Allocator, xml_content: []const u8) ParseError!C
     doc.properties = if (properties.items.len > 0) try properties.toOwnedSlice(allocator) else null;
     doc.signals = if (signals.items.len > 0) try signals.toOwnedSlice(allocator) else null;
     doc.constants = if (constants.items.len > 0) try constants.toOwnedSlice(allocator) else null;
+    doc.constructors = if (constructors.items.len > 0) try constructors.toOwnedSlice(allocator) else null;
+    doc.operators = if (operators.items.len > 0) try operators.toOwnedSlice(allocator) else null;
 
     return doc;
 }
@@ -142,7 +155,7 @@ pub fn freeClassDoc(allocator: Allocator, doc: ClassDoc) void {
         allocator.free(tutorials);
     }
 
-    inline for (.{ "methods", "properties", "signals", "constants" }) |field| {
+    inline for (.{ "methods", "properties", "signals", "constants", "constructors", "operators" }) |field| {
         if (@field(doc, field)) |members| {
             for (members) |m| {
                 allocator.free(m.name);
@@ -415,6 +428,57 @@ test "parses constants with descriptions" {
     try std.testing.expectEqual(1, consts.len);
     try std.testing.expectEqualStrings("MAX_VALUE", consts[0].name);
     try std.testing.expectEqualStrings("Maximum allowed value.", consts[0].description.?);
+}
+
+const test_xml_with_constructors_and_operators =
+    \\<?xml version="1.0" encoding="UTF-8" ?>
+    \\<class name="Vector2">
+    \\    <brief_description>A 2D vector.</brief_description>
+    \\    <description>2D vector type.</description>
+    \\    <constructors>
+    \\        <constructor name="Vector2">
+    \\            <return type="Vector2" />
+    \\            <description>Constructs a default Vector2.</description>
+    \\        </constructor>
+    \\        <constructor name="Vector2">
+    \\            <return type="Vector2" />
+    \\            <param index="0" name="x" type="float" />
+    \\            <param index="1" name="y" type="float" />
+    \\            <description>Constructs from x and y.</description>
+    \\        </constructor>
+    \\    </constructors>
+    \\    <operators>
+    \\        <operator name="operator +">
+    \\            <return type="Vector2" />
+    \\            <param index="0" name="right" type="Vector2" />
+    \\            <description>Adds two vectors.</description>
+    \\        </operator>
+    \\    </operators>
+    \\</class>
+;
+
+test "parses constructors" {
+    const allocator = std.testing.allocator;
+    const doc = try parseClassDoc(allocator, test_xml_with_constructors_and_operators);
+    defer freeClassDoc(allocator, doc);
+
+    const ctors = doc.constructors.?;
+    try std.testing.expectEqual(2, ctors.len);
+    try std.testing.expectEqualStrings("Vector2", ctors[0].name);
+    try std.testing.expect(ctors[0].params == null);
+    try std.testing.expectEqual(2, ctors[1].params.?.len);
+}
+
+test "parses operators" {
+    const allocator = std.testing.allocator;
+    const doc = try parseClassDoc(allocator, test_xml_with_constructors_and_operators);
+    defer freeClassDoc(allocator, doc);
+
+    const ops = doc.operators.?;
+    try std.testing.expectEqual(1, ops.len);
+    try std.testing.expectEqualStrings("operator +", ops[0].name);
+    try std.testing.expectEqualStrings("Vector2", ops[0].return_type.?);
+    try std.testing.expectEqual(1, ops[0].params.?.len);
 }
 
 const test_xml_with_params =
