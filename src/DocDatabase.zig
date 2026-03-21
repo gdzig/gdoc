@@ -21,6 +21,11 @@ pub const EntryKind = enum {
     signal,
 };
 
+pub const Tutorial = struct {
+    title: []const u8,
+    url: []const u8,
+};
+
 pub const Entry = struct {
     key: []const u8,
     name: []const u8,
@@ -30,6 +35,7 @@ pub const Entry = struct {
     brief_description: ?[]const u8 = null,
     signature: ?[]const u8 = null,
     members: ?[]usize = null,
+    tutorials: ?[]const Tutorial = null,
 };
 
 const RootState = enum {
@@ -419,6 +425,15 @@ fn generateMarkdownForEntry(self: DocDatabase, allocator: Allocator, entry: Entr
 
     if (entry.description) |desc| {
         try writer.print("\n## Description\n\n{s}\n", .{desc});
+    }
+
+    if (entry.tutorials) |tutorials| {
+        if (tutorials.len > 0) {
+            try writer.writeAll("\n## Tutorials\n\n");
+            for (tutorials) |tutorial| {
+                try writer.print("- [{s}]({s})\n", .{ tutorial.title, tutorial.url });
+            }
+        }
     }
 
     if (entry.members) |member_indices| {
