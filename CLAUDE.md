@@ -9,8 +9,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **gdoc** is a CLI documentation viewer for Godot API documentation, similar to `zigdoc`. It parses Godot's API documentation and displays it in the terminal with BBCode-to-Markdown conversion.
 
 Key behavior:
-- Uses the user's local `godot` executable if available
-- Falls back to downloading the latest API JSON from GitHub into cache if Godot is not installed
+- Requires `godot` executable to determine version and fetch XML class documentation
+- Downloads XML docs from GitHub, parses them, and builds a markdown cache
 - Converts BBCode documentation to Markdown using the `bbcodez` library for terminal display
 
 ## Build System
@@ -57,11 +57,14 @@ The build system imports `bbcodez` as a dependency and makes it available to the
 
 ### Expected Data Flow
 1. Parse CLI arguments for symbol lookup (e.g., `gdoc Node2D.position`)
-2. Locate Godot API JSON:
-   - Check for local `godot` executable → run `godot --dump-extension-api`
-   - If not found → download from GitHub to cache directory
-3. Parse JSON to find requested symbol documentation
-4. Convert BBCode documentation to Markdown using `bbcodez`
+2. Check if markdown cache is populated (xml_docs/.complete marker + Object/index.md sentinel)
+3. If cache is empty:
+   - Run `godot --version` to determine Godot version
+   - Download XML class docs tarball from GitHub
+   - Parse all XML files into DocDatabase via `loadFromXmlDir`
+   - Convert BBCode descriptions to Markdown
+   - Generate markdown cache files
+4. Read requested symbol's markdown from cache
 5. Display formatted output to terminal
 
 ### Integration with bbcodez
