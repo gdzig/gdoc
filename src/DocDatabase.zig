@@ -10,8 +10,8 @@ pub const Error = error{
 };
 
 pub const EntryKind = enum {
-    builtin_class,
     class,
+    constructor,
     method,
     property,
     constant,
@@ -36,6 +36,9 @@ pub const Entry = struct {
     signature: ?[]const u8 = null,
     members: ?[]usize = null,
     tutorials: ?[]const Tutorial = null,
+    inherits: ?[]const u8 = null,
+    qualifiers: ?[]const u8 = null,
+    default_value: ?[]const u8 = null,
 };
 
 const RootState = enum {
@@ -80,7 +83,7 @@ pub fn loadFromJsonLeaky(arena_allocator: Allocator, scanner: *Scanner) !DocData
                 };
 
                 switch (state) {
-                    .builtin_classes => try db.parseClasses(.builtin_class, arena_allocator, scanner),
+                    .builtin_classes => try db.parseClasses(.class, arena_allocator, scanner),
                     .classes => try db.parseClasses(.class, arena_allocator, scanner),
                     .utility_functions => try db.parseGlobalMethods(arena_allocator, scanner),
                     else => continue,
@@ -532,7 +535,7 @@ test "parse simple builtin class from JSON" {
     const entry = db.symbols.get("bool");
     try std.testing.expect(entry != null);
     try std.testing.expectEqualStrings("bool", entry.?.name);
-    try std.testing.expectEqual(EntryKind.builtin_class, entry.?.kind);
+    try std.testing.expectEqual(EntryKind.class, entry.?.kind);
 }
 
 test "parse regular class from JSON" {
@@ -1311,6 +1314,23 @@ test "generateMarkdownForSymbol for class with tutorials" {
 
     try db.generateMarkdownForSymbol(allocator, "Sprite2D", writer);
     try writer.flush();
+}
+
+test "Entry supports inherits, qualifiers, and default_value fields" {
+    const entry = Entry{
+        .key = "Node2D.position",
+        .name = "position",
+        .kind = .property,
+        .inherits = null,
+        .qualifiers = null,
+        .default_value = "Vector2(0, 0)",
+    };
+    try std.testing.expectEqualStrings("Vector2(0, 0)", entry.default_value.?);
+}
+
+test "EntryKind has constructor value" {
+    const kind: EntryKind = .constructor;
+    try std.testing.expect(kind == .constructor);
 }
 
 const std = @import("std");
