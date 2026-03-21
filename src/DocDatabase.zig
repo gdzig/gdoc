@@ -736,6 +736,10 @@ fn generateMarkdownForEntry(self: DocDatabase, allocator: Allocator, entry: Entr
 
     try writer.writeByte('\n');
 
+    if (entry.inherits) |inherits| {
+        try writer.print("\n*Inherits: {s}*\n", .{inherits});
+    }
+
     if (entry.parent_index) |parent_index| {
         const parent = self.symbols.values()[parent_index];
         try writer.print("\n**Parent**: {s}\n", .{parent.name});
@@ -764,14 +768,18 @@ fn generateMarkdownForEntry(self: DocDatabase, allocator: Allocator, entry: Entr
 }
 
 fn generateMemberListings(self: DocDatabase, allocator: Allocator, member_indices: []usize, writer: *Writer) !void {
+    var constructors: ArrayList(usize) = .empty;
     var properties: ArrayList(usize) = .empty;
     var methods: ArrayList(usize) = .empty;
+    var operators: ArrayList(usize) = .empty;
     var signals: ArrayList(usize) = .empty;
     var constants: ArrayList(usize) = .empty;
     var enums: ArrayList(usize) = .empty;
 
+    defer constructors.deinit(allocator);
     defer properties.deinit(allocator);
     defer methods.deinit(allocator);
+    defer operators.deinit(allocator);
     defer signals.deinit(allocator);
     defer constants.deinit(allocator);
     defer enums.deinit(allocator);
@@ -779,8 +787,10 @@ fn generateMemberListings(self: DocDatabase, allocator: Allocator, member_indice
     for (member_indices) |idx| {
         const member: Entry = self.symbols.values()[idx];
         switch (member.kind) {
+            .constructor => try constructors.append(allocator, idx),
             .property => try properties.append(allocator, idx),
             .method => try methods.append(allocator, idx),
+            .operator => try operators.append(allocator, idx),
             .signal => try signals.append(allocator, idx),
             .constant => try constants.append(allocator, idx),
             .enum_value => try enums.append(allocator, idx),
@@ -788,8 +798,10 @@ fn generateMemberListings(self: DocDatabase, allocator: Allocator, member_indice
         }
     }
 
+    try self.formatMemberSection("Constructors", constructors.items, writer);
     try self.formatMemberSection("Properties", properties.items, writer);
     try self.formatMemberSection("Methods", methods.items, writer);
+    try self.formatMemberSection("Operators", operators.items, writer);
     try self.formatMemberSection("Signals", signals.items, writer);
     try self.formatMemberSection("Constants", constants.items, writer);
     try self.formatMemberSection("Enums", enums.items, writer);
@@ -813,7 +825,15 @@ fn formatMemberLine(self: DocDatabase, member_idx: usize, writer: *Writer) !void
         try writer.writeAll(sig);
     }
 
-    try writer.writeAll("**");
+    if (member.qualifiers) |quals| {
+        try writer.print("** `{s}`", .{quals});
+    } else {
+        try writer.writeAll("**");
+    }
+
+    if (member.default_value) |default| {
+        try writer.print(" = `{s}`", .{default});
+    }
 
     if (member.brief_description) |brief| {
         try writer.print(" - {s}", .{brief});
@@ -1650,6 +1670,29 @@ test "Entry supports inherits, qualifiers, and default_value fields" {
 test "EntryKind has constructor value" {
     const kind: EntryKind = .constructor;
     try std.testing.expect(kind == .constructor);
+}
+
+test "generateMarkdownForSymbol shows inheritance" {
+    const allocator = std.testing.allocator;
+
+    var db = DocDatabase{ .symbols = StringArrayHashMap(Entry).empty };
+    defer db.symbols.deinit(allocator);
+
+    try db.symbols.put(allocator, "Node2D", Entry{
+        .key = "Node2D",
+        .name = "Node2D",
+        .kind = .class,
+        .inherits = "CanvasItem",
+        .brief_description = "A 2D game object.",
+    });
+
+    var allocating: std.Io.Writer.Allocating = .init(allocator);
+    defer allocating.deinit();
+
+    try db.generateMarkdownForSymbol(allocator, "Node2D", &allocating.writer);
+    const written = allocating.written();
+
+    try std.testing.expect(std.mem.indexOf(u8, written, "*Inherits: CanvasItem*") != null);
 }
 
 test "loadFromXmlDir parses XML files into symbol table" {
