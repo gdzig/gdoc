@@ -408,6 +408,325 @@ pub fn lookupSymbolExact(self: DocDatabase, symbol: []const u8) DocDatabase.Erro
     return self.symbols.get(symbol) orelse return DocDatabase.Error.SymbolNotFound;
 }
 
+pub fn loadFromXmlDir(arena_allocator: Allocator, tmp_allocator: Allocator, xml_dir_path: []const u8) !DocDatabase {
+    var db: DocDatabase = .{};
+
+    var dir = try std.fs.openDirAbsolute(xml_dir_path, .{ .iterate = true });
+    defer dir.close();
+
+    // First pass: collect all files, parse them, register classes.
+    // We need two passes for GlobalScope precedence, but we can do it in one
+    // by deferring global registration.
+    const GlobalEntry = struct {
+        key: []const u8,
+        entry: Entry,
+    };
+    var global_scope_entries: ArrayList(GlobalEntry) = .empty;
+    defer global_scope_entries.deinit(tmp_allocator);
+    var gdscript_entries: ArrayList(GlobalEntry) = .empty;
+    defer gdscript_entries.deinit(tmp_allocator);
+
+    var iter = dir.iterate();
+    while (iter.next() catch return error.ReadFailed) |dir_entry| {
+        if (dir_entry.kind != .file) continue;
+        if (!std.mem.endsWith(u8, dir_entry.name, ".xml")) continue;
+
+        const content = dir.readFileAlloc(tmp_allocator, dir_entry.name, 2 * 1024 * 1024) catch continue;
+        defer tmp_allocator.free(content);
+
+        const class_doc = XmlDocParser.parseClassDoc(arena_allocator, content) catch |err| {
+            const class_name = dir_entry.name[0 .. dir_entry.name.len - 4];
+            parser_log.warn("failed to parse XML doc for {s}: {}", .{ class_name, err });
+            continue;
+        };
+
+        // Convert tutorials
+        const db_tutorials: ?[]const Tutorial = if (class_doc.tutorials) |tutorials| blk: {
+            const result = try arena_allocator.alloc(Tutorial, tutorials.len);
+            for (tutorials, 0..) |t, i| {
+                result[i] = .{ .title = t.title, .url = t.url };
+            }
+            break :blk result;
+        } else null;
+
+        // Create class entry
+        const class_key = class_doc.name;
+        try db.symbols.put(arena_allocator, class_key, .{
+            .key = class_key,
+            .name = class_key,
+            .kind = .class,
+            .description = class_doc.description,
+            .brief_description = class_doc.brief_description,
+            .inherits = class_doc.inherits,
+            .tutorials = db_tutorials,
+        });
+        const class_idx = db.symbols.getIndex(class_key).?;
+
+        var member_indices: ArrayList(usize) = .empty;
+        defer member_indices.deinit(tmp_allocator);
+
+        const is_global_scope = std.mem.eql(u8, class_doc.name, "@GlobalScope");
+        const is_gdscript = std.mem.eql(u8, class_doc.name, "@GDScript");
+
+        // Process methods
+        if (class_doc.methods) |methods| {
+            for (methods) |method| {
+                const sig = try buildMethodSignature(arena_allocator, method);
+                const dotted_key = try std.fmt.allocPrint(arena_allocator, "{s}.{s}", .{ class_doc.name, method.name });
+                const child_kind: EntryKind = if (is_global_scope or is_gdscript) .global_function else .method;
+                const child: Entry = .{
+                    .key = dotted_key,
+                    .name = method.name,
+                    .parent_index = class_idx,
+                    .kind = child_kind,
+                    .description = method.description,
+                    .signature = sig,
+                    .qualifiers = method.qualifiers,
+                };
+                try db.symbols.put(arena_allocator, dotted_key, child);
+                const child_idx = db.symbols.getIndex(dotted_key).?;
+                try member_indices.append(tmp_allocator, child_idx);
+
+                // Track for top-level registration
+                if (is_global_scope) {
+                    try global_scope_entries.append(tmp_allocator, .{ .key = method.name, .entry = child });
+                } else if (is_gdscript) {
+                    try gdscript_entries.append(tmp_allocator, .{ .key = method.name, .entry = child });
+                }
+            }
+        }
+
+        // Process properties
+        if (class_doc.properties) |properties| {
+            for (properties) |prop| {
+                const sig = try buildPropertySignature(arena_allocator, prop);
+                const dotted_key = try std.fmt.allocPrint(arena_allocator, "{s}.{s}", .{ class_doc.name, prop.name });
+                const child: Entry = .{
+                    .key = dotted_key,
+                    .name = prop.name,
+                    .parent_index = class_idx,
+                    .kind = .property,
+                    .description = prop.description,
+                    .signature = sig,
+                    .default_value = prop.default_value,
+                };
+                try db.symbols.put(arena_allocator, dotted_key, child);
+                const child_idx = db.symbols.getIndex(dotted_key).?;
+                try member_indices.append(tmp_allocator, child_idx);
+            }
+        }
+
+        // Process signals
+        if (class_doc.signals) |signals| {
+            for (signals) |signal| {
+                const sig = try buildSignalSignature(arena_allocator, signal);
+                const dotted_key = try std.fmt.allocPrint(arena_allocator, "{s}.{s}", .{ class_doc.name, signal.name });
+                const child: Entry = .{
+                    .key = dotted_key,
+                    .name = signal.name,
+                    .parent_index = class_idx,
+                    .kind = .signal,
+                    .description = signal.description,
+                    .signature = sig,
+                };
+                try db.symbols.put(arena_allocator, dotted_key, child);
+                const child_idx = db.symbols.getIndex(dotted_key).?;
+                try member_indices.append(tmp_allocator, child_idx);
+            }
+        }
+
+        // Process constants (with enum grouping)
+        if (class_doc.constants) |constants| {
+            for (constants) |constant| {
+                const sig = try buildConstantSignature(arena_allocator, constant);
+                if (constant.qualifiers) |enum_name| {
+                    // Enum-grouped constant: "ClassName.EnumName.VALUE_NAME"
+                    const dotted_key = try std.fmt.allocPrint(arena_allocator, "{s}.{s}.{s}", .{ class_doc.name, enum_name, constant.name });
+                    const child: Entry = .{
+                        .key = dotted_key,
+                        .name = constant.name,
+                        .parent_index = class_idx,
+                        .kind = .enum_value,
+                        .description = constant.description,
+                        .signature = sig,
+                        .qualifiers = constant.qualifiers,
+                        .default_value = constant.default_value,
+                    };
+                    try db.symbols.put(arena_allocator, dotted_key, child);
+                    const child_idx = db.symbols.getIndex(dotted_key).?;
+                    try member_indices.append(tmp_allocator, child_idx);
+                } else {
+                    // Regular constant: "ClassName.CONSTANT_NAME"
+                    const dotted_key = try std.fmt.allocPrint(arena_allocator, "{s}.{s}", .{ class_doc.name, constant.name });
+                    const child: Entry = .{
+                        .key = dotted_key,
+                        .name = constant.name,
+                        .parent_index = class_idx,
+                        .kind = .constant,
+                        .description = constant.description,
+                        .signature = sig,
+                        .default_value = constant.default_value,
+                    };
+                    try db.symbols.put(arena_allocator, dotted_key, child);
+                    const child_idx = db.symbols.getIndex(dotted_key).?;
+                    try member_indices.append(tmp_allocator, child_idx);
+                }
+            }
+        }
+
+        // Process constructors
+        if (class_doc.constructors) |constructors| {
+            for (constructors) |ctor| {
+                const sig = try buildConstructorSignature(arena_allocator, ctor);
+                const dotted_key = try std.fmt.allocPrint(arena_allocator, "{s}.{s}", .{ class_doc.name, ctor.name });
+                const child: Entry = .{
+                    .key = dotted_key,
+                    .name = ctor.name,
+                    .parent_index = class_idx,
+                    .kind = .constructor,
+                    .description = ctor.description,
+                    .signature = sig,
+                };
+                // Constructors may have duplicate keys (overloads); only keep first
+                if (db.symbols.get(dotted_key) == null) {
+                    try db.symbols.put(arena_allocator, dotted_key, child);
+                    const child_idx = db.symbols.getIndex(dotted_key).?;
+                    try member_indices.append(tmp_allocator, child_idx);
+                }
+            }
+        }
+
+        // Process operators
+        if (class_doc.operators) |operators| {
+            for (operators) |op| {
+                const sig = try buildOperatorSignature(arena_allocator, op);
+                const dotted_key = try std.fmt.allocPrint(arena_allocator, "{s}.{s}", .{ class_doc.name, op.name });
+                const child: Entry = .{
+                    .key = dotted_key,
+                    .name = op.name,
+                    .parent_index = class_idx,
+                    .kind = .operator,
+                    .description = op.description,
+                    .signature = sig,
+                };
+                if (db.symbols.get(dotted_key) == null) {
+                    try db.symbols.put(arena_allocator, dotted_key, child);
+                    const child_idx = db.symbols.getIndex(dotted_key).?;
+                    try member_indices.append(tmp_allocator, child_idx);
+                }
+            }
+        }
+
+        // Update class entry's members
+        if (member_indices.items.len > 0) {
+            const members_slice = try arena_allocator.dupe(usize, member_indices.items);
+            var class_ptr = db.symbols.getPtr(class_key).?;
+            class_ptr.members = members_slice;
+        }
+    }
+
+    // Register @GDScript functions as top-level (lower precedence)
+    for (gdscript_entries.items) |ge| {
+        if (db.symbols.get(ge.key) == null) {
+            var entry = ge.entry;
+            entry.key = try arena_allocator.dupe(u8, ge.key);
+            try db.symbols.put(arena_allocator, entry.key, entry);
+        }
+    }
+
+    // Register @GlobalScope functions as top-level (higher precedence, overwrites)
+    for (global_scope_entries.items) |ge| {
+        var entry = ge.entry;
+        entry.key = try arena_allocator.dupe(u8, ge.key);
+        try db.symbols.put(arena_allocator, entry.key, entry);
+    }
+
+    return db;
+}
+
+fn buildMethodSignature(allocator: Allocator, method: XmlDocParser.MemberDoc) !?[]const u8 {
+    var buf: std.Io.Writer.Allocating = .init(allocator);
+    errdefer buf.deinit();
+
+    try buf.writer.writeByte('(');
+    try writeParams(&buf.writer, method.params);
+    try buf.writer.writeByte(')');
+
+    if (method.return_type) |rt| {
+        if (!std.mem.eql(u8, rt, "void")) {
+            try buf.writer.print(" -> {s}", .{rt});
+        }
+    }
+
+    return try buf.toOwnedSlice();
+}
+
+fn buildPropertySignature(allocator: Allocator, prop: XmlDocParser.MemberDoc) !?[]const u8 {
+    if (prop.return_type) |rt| {
+        return try std.fmt.allocPrint(allocator, ": {s}", .{rt});
+    }
+    return null;
+}
+
+fn buildConstructorSignature(allocator: Allocator, ctor: XmlDocParser.MemberDoc) !?[]const u8 {
+    var buf: std.Io.Writer.Allocating = .init(allocator);
+    errdefer buf.deinit();
+
+    try buf.writer.writeByte('(');
+    try writeParams(&buf.writer, ctor.params);
+    try buf.writer.writeByte(')');
+
+    return try buf.toOwnedSlice();
+}
+
+fn buildOperatorSignature(allocator: Allocator, op: XmlDocParser.MemberDoc) !?[]const u8 {
+    var buf: std.Io.Writer.Allocating = .init(allocator);
+    errdefer buf.deinit();
+
+    try buf.writer.writeByte('(');
+    try writeParams(&buf.writer, op.params);
+    try buf.writer.writeByte(')');
+
+    if (op.return_type) |rt| {
+        try buf.writer.print(" -> {s}", .{rt});
+    }
+
+    return try buf.toOwnedSlice();
+}
+
+fn buildSignalSignature(allocator: Allocator, signal: XmlDocParser.MemberDoc) !?[]const u8 {
+    if (signal.params) |_| {
+        var buf: std.Io.Writer.Allocating = .init(allocator);
+        errdefer buf.deinit();
+
+        try buf.writer.writeByte('(');
+        try writeParams(&buf.writer, signal.params);
+        try buf.writer.writeByte(')');
+
+        return try buf.toOwnedSlice();
+    }
+    return null;
+}
+
+fn buildConstantSignature(allocator: Allocator, constant: XmlDocParser.MemberDoc) !?[]const u8 {
+    if (constant.default_value) |val| {
+        return try std.fmt.allocPrint(allocator, " = {s}", .{val});
+    }
+    return null;
+}
+
+fn writeParams(writer: *std.Io.Writer, params: ?[]XmlDocParser.ParamDoc) !void {
+    if (params) |ps| {
+        for (ps, 0..) |p, i| {
+            if (i > 0) try writer.writeAll(", ");
+            try writer.print("{s}: {s}", .{ p.name, p.type });
+            if (p.default_value) |dv| {
+                try writer.print(" = {s}", .{dv});
+            }
+        }
+    }
+}
+
 fn generateMarkdownForEntry(self: DocDatabase, allocator: Allocator, entry: Entry, writer: *Writer) !void {
     try writer.print("# {s}", .{entry.key});
 
@@ -1333,6 +1652,134 @@ test "EntryKind has constructor value" {
     try std.testing.expect(kind == .constructor);
 }
 
+test "loadFromXmlDir parses XML files into symbol table" {
+    var arena = ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const sprite2d_xml =
+        \\<?xml version="1.0" encoding="UTF-8" ?>
+        \\<class name="Sprite2D" inherits="Node2D">
+        \\    <brief_description>A 2D sprite node.</brief_description>
+        \\    <description>Displays a 2D texture.</description>
+        \\    <methods>
+        \\        <method name="is_flipped_h" qualifiers="const">
+        \\            <return type="bool" />
+        \\            <description>Returns whether the sprite is flipped horizontally.</description>
+        \\        </method>
+        \\    </methods>
+        \\    <members>
+        \\        <member name="texture" type="Texture2D" default="null">The texture to display.</member>
+        \\    </members>
+        \\</class>
+    ;
+
+    try tmp_dir.dir.writeFile(.{ .sub_path = "Sprite2D.xml", .data = sprite2d_xml });
+
+    const tmp_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(tmp_path);
+
+    const db = try DocDatabase.loadFromXmlDir(arena.allocator(), std.testing.allocator, tmp_path);
+
+    // Verify class entry
+    const class_entry = db.symbols.get("Sprite2D").?;
+    try std.testing.expectEqual(EntryKind.class, class_entry.kind);
+    try std.testing.expectEqualStrings("Node2D", class_entry.inherits.?);
+    try std.testing.expectEqualStrings("A 2D sprite node.", class_entry.brief_description.?);
+    try std.testing.expectEqualStrings("Displays a 2D texture.", class_entry.description.?);
+
+    // Verify method entry
+    const method_entry = db.symbols.get("Sprite2D.is_flipped_h").?;
+    try std.testing.expectEqual(EntryKind.method, method_entry.kind);
+    try std.testing.expect(method_entry.signature != null);
+    try std.testing.expect(std.mem.indexOf(u8, method_entry.signature.?, "bool") != null);
+    try std.testing.expectEqualStrings("const", method_entry.qualifiers.?);
+
+    // Verify property entry
+    const prop_entry = db.symbols.get("Sprite2D.texture").?;
+    try std.testing.expectEqual(EntryKind.property, prop_entry.kind);
+    try std.testing.expectEqualStrings("null", prop_entry.default_value.?);
+}
+
+test "loadFromXmlDir groups constants with enum attribute as enum_value entries" {
+    var arena = ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const node_xml =
+        \\<?xml version="1.0" encoding="UTF-8" ?>
+        \\<class name="Node">
+        \\    <brief_description>Base class.</brief_description>
+        \\    <description>Base node.</description>
+        \\    <constants>
+        \\        <constant name="NOTIFICATION_READY" value="13">Ready notification.</constant>
+        \\        <constant name="PROCESS_MODE_INHERIT" value="0" enum="ProcessMode">Inherits process mode.</constant>
+        \\        <constant name="PROCESS_MODE_ALWAYS" value="3" enum="ProcessMode">Always process.</constant>
+        \\    </constants>
+        \\</class>
+    ;
+
+    try tmp_dir.dir.writeFile(.{ .sub_path = "Node.xml", .data = node_xml });
+
+    const tmp_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(tmp_path);
+
+    const db = try DocDatabase.loadFromXmlDir(arena.allocator(), std.testing.allocator, tmp_path);
+
+    // Regular constant
+    const notif_entry = db.symbols.get("Node.NOTIFICATION_READY").?;
+    try std.testing.expectEqual(EntryKind.constant, notif_entry.kind);
+
+    // Enum-grouped constants
+    const inherit_entry = db.symbols.get("Node.ProcessMode.PROCESS_MODE_INHERIT").?;
+    try std.testing.expectEqual(EntryKind.enum_value, inherit_entry.kind);
+
+    const always_entry = db.symbols.get("Node.ProcessMode.PROCESS_MODE_ALWAYS").?;
+    try std.testing.expectEqual(EntryKind.enum_value, always_entry.kind);
+}
+
+test "loadFromXmlDir registers GlobalScope functions as top-level entries" {
+    var arena = ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const global_scope_xml =
+        \\<?xml version="1.0" encoding="UTF-8" ?>
+        \\<class name="@GlobalScope">
+        \\    <brief_description>Global scope.</brief_description>
+        \\    <description>Global scope constants and functions.</description>
+        \\    <methods>
+        \\        <method name="abs">
+        \\            <return type="Variant" />
+        \\            <param index="0" name="x" type="Variant" />
+        \\            <description>Returns the absolute value.</description>
+        \\        </method>
+        \\    </methods>
+        \\</class>
+    ;
+
+    try tmp_dir.dir.writeFile(.{ .sub_path = "@GlobalScope.xml", .data = global_scope_xml });
+
+    const tmp_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(tmp_path);
+
+    const db = try DocDatabase.loadFromXmlDir(arena.allocator(), std.testing.allocator, tmp_path);
+
+    // Verify dotted key exists
+    const dotted_entry = db.symbols.get("@GlobalScope.abs").?;
+    try std.testing.expectEqual(EntryKind.global_function, dotted_entry.kind);
+
+    // Verify top-level entry exists
+    const top_entry = db.symbols.get("abs").?;
+    try std.testing.expectEqual(EntryKind.global_function, top_entry.kind);
+}
+
 const std = @import("std");
 const ArenaAllocator = std.heap.ArenaAllocator;
 const Allocator = std.mem.Allocator;
@@ -1345,3 +1792,4 @@ const File = std.fs.File;
 const Writer = std.Io.Writer;
 
 const bbcodez = @import("bbcodez");
+const XmlDocParser = @import("XmlDocParser.zig");
