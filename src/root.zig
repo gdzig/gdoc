@@ -430,6 +430,10 @@ fn fetchXmlDocs(allocator: Allocator, cache_path: []const u8) void {
     var url_buf: [256]u8 = undefined;
     const url = source_fetch.buildTarballUrl(&url_buf, version) orelse return;
 
+    var spinner = Spinner{ .message = "Downloading XML docs..." };
+    spinner.start();
+    defer spinner.finish();
+
     source_fetch.fetchAndExtractXmlDocs(allocator, url, xml_dir) catch |err| {
         // Try hash-based fallback URL
         if (version.hash) |hash| {
@@ -574,6 +578,7 @@ pub const XmlDocParser = @import("XmlDocParser.zig");
 pub const cache = @import("cache.zig");
 pub const api = @import("api.zig");
 pub const source_fetch = @import("source_fetch.zig");
+const Spinner = @import("Spinner.zig");
 
 const zigdown = @import("zigdown");
 const ConsoleRenderer = zigdown.ConsoleRenderer;
