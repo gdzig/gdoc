@@ -1,4 +1,4 @@
-#!/usr/bin/env -S usage bash
+#!/usr/bin/env bash
 #MISE description="Bump version, commit, and tag a release"
 #USAGE arg "<bump>" help="Version bump type" {
 #USAGE   choices "major" "minor" "patch"
@@ -21,7 +21,7 @@ if ! git diff --quiet || ! git diff --cached --quiet; then
 fi
 
 # Read current version from build.zig.zon
-current=$(zq -q .version -r < build.zig.zon)
+current=$(zq -i build.zig.zon -q .version -r)
 if [[ -z "$current" ]]; then
     echo "Error: could not read version from build.zig.zon"
     exit 1
