@@ -144,6 +144,26 @@ pub fn cacheIsPopulated(allocator: Allocator, cache_path: []const u8) !bool {
     return true;
 }
 
+pub fn getXmlDocsDirInCache(allocator: Allocator, cache_dir: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(
+        allocator,
+        "{f}",
+        .{std.fs.path.fmtJoin(&[_][]const u8{ cache_dir, "xml_docs" })},
+    );
+}
+
+pub fn xmlDocsArePopulated(allocator: Allocator, cache_dir: []const u8) !bool {
+    const xml_dir = try getXmlDocsDirInCache(allocator, cache_dir);
+    defer allocator.free(xml_dir);
+
+    const marker = source_fetch.readCompleteMarker(allocator, xml_dir);
+    if (marker) |m| {
+        allocator.free(m);
+        return true;
+    }
+    return false;
+}
+
 test "getCacheDir returns cache directory path" {
     const allocator = std.testing.allocator;
 
@@ -744,3 +764,4 @@ const Writer = std.Io.Writer;
 
 const known_folders = @import("known-folders");
 const DocDatabase = @import("DocDatabase.zig");
+const source_fetch = @import("source_fetch.zig");

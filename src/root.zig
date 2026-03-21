@@ -35,17 +35,30 @@ pub fn markdownForSymbol(allocator: Allocator, symbol: []const u8, api_json_path
         const cache_path = try cache.getCacheDir(allocator);
         defer allocator.free(cache_path);
 
-        if (!try cache.cacheIsPopulated(allocator, cache_path)) {
+        const needs_full_rebuild = !try cache.cacheIsPopulated(allocator, cache_path);
+
+        if (needs_full_rebuild) {
             try cache.ensureDirectoryExists(cache_path);
             try api.generateApiJsonIfNotExists(allocator, "godot", cache_path);
+        }
 
+        // Fetch XML docs if missing (best-effort)
+        if (needs_full_rebuild or !try cache.xmlDocsArePopulated(allocator, cache_path)) {
+            fetchXmlDocs(allocator, cache_path);
+        }
+
+        if (needs_full_rebuild) {
             const json_path = try cache.getJsonCachePathInDir(allocator, cache_path);
             defer allocator.free(json_path);
 
             const json_file = try std.fs.openFileAbsolute(json_path, .{});
             defer json_file.close();
 
-            const db = try DocDatabase.loadFromJsonFileLeaky(arena.allocator(), json_file);
+            var db = try DocDatabase.loadFromJsonFileLeaky(arena.allocator(), json_file);
+
+            // Merge XML data into db before generating markdown cache
+            mergeXmlDocs(arena.allocator(), allocator, &db, cache_path);
+
             try cache.generateMarkdownCache(allocator, db, cache_path);
         }
 
@@ -399,6 +412,142 @@ test "markdownForSymbol generates markdown cache when cache is empty" {
 
     // Cleanup
     cache.clearCache(allocator) catch {};
+}
+
+fn fetchXmlDocs(allocator: Allocator, cache_path: []const u8) void {
+    const xml_dir = cache.getXmlDocsDirInCache(allocator, cache_path) catch return;
+    defer allocator.free(xml_dir);
+
+    cache.ensureDirectoryExists(xml_dir) catch return;
+
+    const version = source_fetch.getGodotVersion(allocator) orelse return;
+    defer version.deinit(allocator);
+
+    var url_buf: [256]u8 = undefined;
+    const url = source_fetch.buildTarballUrl(&url_buf, version) orelse return;
+
+    source_fetch.fetchAndExtractXmlDocs(allocator, url, xml_dir) catch |err| {
+        // Try hash-based fallback URL
+        if (version.hash) |hash| {
+            var hash_url_buf: [256]u8 = undefined;
+            const hash_url = source_fetch.buildTarballUrlFromHash(&hash_url_buf, hash) orelse return;
+            source_fetch.fetchAndExtractXmlDocs(allocator, hash_url, xml_dir) catch {
+                std.log.warn("XML doc fetch failed ({}), proceeding without XML supplementation", .{err});
+                return;
+            };
+        } else {
+            std.log.warn("XML doc fetch failed ({}), proceeding without XML supplementation", .{err});
+            return;
+        }
+    };
+
+    var version_buf: [64]u8 = undefined;
+    const version_str = version.formatVersion(&version_buf) orelse return;
+
+    source_fetch.writeCompleteMarker(allocator, xml_dir, version_str) catch return;
+}
+
+fn mergeXmlDocs(arena_allocator: Allocator, tmp_allocator: Allocator, db: *DocDatabase, cache_path: []const u8) void {
+    const xml_dir = cache.getXmlDocsDirInCache(tmp_allocator, cache_path) catch return;
+    defer tmp_allocator.free(xml_dir);
+
+    var dir = std.fs.openDirAbsolute(xml_dir, .{ .iterate = true }) catch return;
+    defer dir.close();
+
+    var iter = dir.iterate();
+    while (iter.next() catch return) |entry| {
+        if (entry.kind != .file) continue;
+        if (!std.mem.endsWith(u8, entry.name, ".xml")) continue;
+
+        const class_name = entry.name[0 .. entry.name.len - 4]; // strip .xml
+
+        // Read XML file
+        const content = dir.readFileAlloc(tmp_allocator, entry.name, 2 * 1024 * 1024) catch continue;
+        defer tmp_allocator.free(content);
+
+        // Parse with arena_allocator so strings outlive this function
+        const class_doc = XmlDocParser.parseClassDoc(arena_allocator, content) catch |err| {
+            std.log.warn("failed to parse XML doc for {s}: {}", .{ class_name, err });
+            continue;
+        };
+        // Do NOT freeClassDoc -- arena owns the memory
+
+        // Merge tutorials
+        if (class_doc.tutorials) |tutorials| {
+            if (tutorials.len > 0) {
+                if (db.symbols.getPtr(class_name)) |db_entry| {
+                    if (db_entry.tutorials == null) {
+                        const db_tutorials = arena_allocator.alloc(DocDatabase.Tutorial, tutorials.len) catch continue;
+                        for (tutorials, 0..) |t, i| {
+                            db_tutorials[i] = .{ .title = t.title, .url = t.url };
+                        }
+                        db_entry.tutorials = db_tutorials;
+                    }
+                }
+            }
+        }
+
+        // Fill missing class description
+        if (class_doc.description) |xml_desc| {
+            if (db.symbols.getPtr(class_name)) |db_entry| {
+                if (db_entry.description == null) {
+                    db_entry.description = xml_desc;
+                }
+            }
+        }
+
+        // Merge member descriptions (methods, properties, signals)
+        if (class_doc.methods) |members| {
+            for (members) |member| {
+                const member_key = std.fmt.allocPrint(tmp_allocator, "{s}.{s}", .{ class_name, member.name }) catch continue;
+                defer tmp_allocator.free(member_key);
+
+                if (db.symbols.getPtr(member_key)) |db_entry| {
+                    if (db_entry.description == null) {
+                        db_entry.description = member.description;
+                    }
+                }
+            }
+        }
+
+        if (class_doc.properties) |members| {
+            for (members) |member| {
+                const member_key = std.fmt.allocPrint(tmp_allocator, "{s}.{s}", .{ class_name, member.name }) catch continue;
+                defer tmp_allocator.free(member_key);
+
+                if (db.symbols.getPtr(member_key)) |db_entry| {
+                    if (db_entry.description == null) {
+                        db_entry.description = member.description;
+                    }
+                }
+            }
+        }
+
+        if (class_doc.signals) |members| {
+            for (members) |member| {
+                const member_key = std.fmt.allocPrint(tmp_allocator, "{s}.{s}", .{ class_name, member.name }) catch continue;
+                defer tmp_allocator.free(member_key);
+
+                if (db.symbols.getPtr(member_key)) |db_entry| {
+                    if (db_entry.description == null) {
+                        db_entry.description = member.description;
+                    }
+                }
+            }
+        }
+
+        // Add entries for classes found in XML but not in JSON
+        if (db.symbols.get(class_name) == null) {
+            const key = std.fmt.allocPrint(arena_allocator, "{s}", .{class_name}) catch continue;
+            db.symbols.put(arena_allocator, key, .{
+                .key = key,
+                .name = key,
+                .kind = .class,
+                .description = class_doc.description,
+                .brief_description = class_doc.brief_description,
+            }) catch continue;
+        }
+    }
 }
 
 comptime {
