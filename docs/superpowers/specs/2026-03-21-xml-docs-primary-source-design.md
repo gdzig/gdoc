@@ -43,9 +43,15 @@ Entry {
 }
 ```
 
-New `EntryKind` values added: `constructor`, `operator`.
+New fields on `Entry`: `inherits`, `qualifiers`, `default_value` (the existing struct has `key`, `name`, `kind`, `description`, `brief_description`, `signature`, `members`, `tutorials`).
 
-The `DocDatabase` remains a flat symbol table keyed by dotted paths (`"Vector2.abs"`, `"@GlobalScope.sin"`). Utility functions from `@GlobalScope.xml` and `@GDScript.xml` are registered both under their qualified name and as top-level entries for convenience (e.g., both `"@GlobalScope.abs"` and `"abs"`).
+New `EntryKind` value: `constructor` (added to existing set which already includes `operator`).
+
+The `DocDatabase` remains a flat symbol table keyed by dotted paths (`"Vector2.abs"`, `"@GlobalScope.sin"`). Utility functions from `@GlobalScope.xml` and `@GDScript.xml` are registered both under their qualified name and as top-level entries for convenience (e.g., both `"@GlobalScope.abs"` and `"abs"`). If both files define the same function name, `@GlobalScope` wins (it is the canonical source; `@GDScript` contains GDScript-specific helpers like `preload`).
+
+**Builtin class detection:** XML docs don't distinguish builtin classes from regular classes. Builtins are identified by a hardcoded list matching the Variant types (Vector2, Vector3, Color, AABB, Basis, Transform2D, Transform3D, Projection, Quaternion, Plane, Rect2, Rect2i, Vector2i, Vector3i, Vector4, Vector4i, RID, Callable, Signal, Dictionary, Array, NodePath, StringName, String, PackedByteArray, PackedInt32Array, PackedInt64Array, PackedFloat32Array, PackedFloat64Array, PackedStringArray, PackedVector2Array, PackedVector3Array, PackedColorArray, PackedVector4Array, int, float, bool, Nil). This list is stable across Godot versions.
+
+**Enum extraction from XML:** XML stores enums within `<constants>` elements using an `enum` attribute (e.g., `<constant name="PROCESS_MODE_INHERIT" value="0" enum="ProcessMode">`). Constants with the same `enum` attribute are grouped into enum entries with kind `enum_value`, keyed as `"ClassName.EnumName.VALUE_NAME"`.
 
 ### XmlDocParser Expansion
 
@@ -87,13 +93,15 @@ ParamDoc {
 ### Removals
 
 - **`api.zig`** — entire file (runs `godot --dump-extension-api`)
-- **`DocDatabase.loadFromJsonFileLeaky`** — JSON parsing logic in `DocDatabase.zig`
-- **`--api-json` CLI flag** — and `api_json_path` parameter threaded through `markdownForSymbol` / `formatAndDisplay`
+- **`DocDatabase.loadFromJsonFileLeaky`** — all JSON parsing logic in `DocDatabase.zig`
+- **`--godot-extension-api` CLI flag** — and the `api_json_path` parameter threaded through `markdownForSymbol`, `formatAndDisplay`, and `renderWithZigdown`
 - **`mergeXmlDocs`** in `root.zig` — no more supplementation
 - **`fetchXmlDocs`** as a separate supplementation step — XML fetch becomes the main path
 - **`api.generateApiJsonIfNotExists`** call in cache flow
 - **`getJsonCachePathInDir`** and JSON-specific cache helpers in `cache.zig`
 - **JSON cache file** (`extension_api.json`) from cache directory
+- **`--no-xml` / `GDOC_NO_XML`** — the `no_xml` field on `Config` becomes meaningless since XML is the sole source
+- **Tests using JSON fixtures** — tests in `root.zig` that create inline JSON (e.g., `markdownForSymbol returns ApiFileNotFound`) are deleted, not rewritten; the JSON path no longer exists
 
 **Kept:**
 - **`bbcodez`** — still needed for BBCode→Markdown conversion in descriptions
@@ -117,9 +125,25 @@ New:
 3. Read symbol markdown from cache
 ```
 
-The `godot` binary is only used for `--version` (to match the tarball URL), never for `--dump-extension-api`.
+The `godot` binary is only used for `--version` (to match the tarball URL), never for `--dump-extension-api`. If `godot` is not on PATH, the tool errors with a clear message: "godot not found. Install Godot and ensure it's on your PATH." This matches the current behavior — `godot` has always been required for JSON export too.
 
-`cache.cacheIsPopulated` checks for the `xml_docs/.complete` marker plus sentinel markdown files.
+`cache.cacheIsPopulated` checks for the `xml_docs/.complete` marker plus the existence of at least one generated markdown directory (e.g., `Object/index.md` as the sentinel — `Object` is the root of the class hierarchy and is always present).
+
+### DocDatabase.loadFromXmlDir
+
+New entry point replacing `loadFromJsonFileLeaky`. Behavior:
+
+1. Open `xml_dir` and iterate all `.xml` files
+2. For each file, call `XmlDocParser.parseClassDoc` (using an arena allocator so all strings outlive the function)
+3. Create a class-level `Entry` with kind determined by the builtin list (see Data Model above)
+4. For each member category (methods, properties, signals, constants, constructors, operators), create child entries keyed as `"ClassName.member_name"`
+5. Build `signature` strings from parsed params and return types:
+   - Methods: `(param: Type, param2: Type = default) -> ReturnType`
+   - Properties: `: Type` (with `= default` if present)
+   - Constructors: `(param: Type, ...)` (name is always the class name)
+   - Operators: `OperatorName(other: Type) -> ReturnType`
+6. For `@GlobalScope.xml` and `@GDScript.xml`, register utility functions as both qualified (`@GlobalScope.sin`) and top-level (`sin`) entries
+7. Populate `members` index arrays on class entries pointing to their children
 
 ### Markdown Output Format
 
@@ -181,4 +205,4 @@ Key additions vs current output:
 - New snapshots for classes with constructors/operators (e.g., Vector2)
 - Unit tests for expanded XmlDocParser (constructors, operators, qualifiers, defaults, params)
 - Integration test: XML dir → DocDatabase → markdown output roundtrip
-- Tests that previously used inline JSON fixtures rewritten to use inline XML fixtures
+- Tests using inline JSON fixtures are deleted (JSON path no longer exists); new tests use inline XML strings
