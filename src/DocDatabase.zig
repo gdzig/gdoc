@@ -6,7 +6,6 @@ symbols: StringArrayHashMap(Entry) = .empty,
 
 pub const Error = error{
     SymbolNotFound,
-    InvalidApiJson,
 };
 
 pub const EntryKind = enum {
@@ -41,106 +40,6 @@ pub const Entry = struct {
     default_value: ?[]const u8 = null,
 };
 
-const RootState = enum {
-    init,
-    builtin_classes,
-    classes,
-    global_constants,
-    global_enums,
-    native_structures,
-    singletons,
-    utility_functions,
-};
-
-pub fn loadFromJsonFileLeaky(arena_allocator: Allocator, file: File) !DocDatabase {
-    var buf: [4096]u8 = undefined;
-    var file_reader = file.reader(&buf);
-    const reader = &file_reader.interface;
-
-    const file_content = try reader.readAlloc(arena_allocator, try file.getEndPos());
-    defer arena_allocator.free(file_content);
-
-    var scanner = Scanner.initCompleteInput(arena_allocator, file_content);
-    defer scanner.deinit();
-
-    return loadFromJsonLeaky(arena_allocator, &scanner) catch |err| switch (err) {
-        Scanner.Error.SyntaxError, Scanner.Error.UnexpectedEndOfInput => return Error.InvalidApiJson,
-        else => return err,
-    };
-}
-
-pub fn loadFromJsonLeaky(arena_allocator: Allocator, scanner: *Scanner) !DocDatabase {
-    var db = DocDatabase{};
-
-    while (true) {
-        const token = try scanner.next();
-        switch (token) {
-            .string => |s| {
-                std.debug.assert(scanner.string_is_object_key);
-                const state = std.meta.stringToEnum(RootState, s) orelse {
-                    try scanner.skipValue();
-                    continue;
-                };
-
-                switch (state) {
-                    .builtin_classes => try db.parseClasses(.class, arena_allocator, scanner),
-                    .classes => try db.parseClasses(.class, arena_allocator, scanner),
-                    .utility_functions => try db.parseGlobalMethods(arena_allocator, scanner),
-                    else => continue,
-                }
-            },
-            .end_of_document => break,
-            else => {},
-        }
-    }
-
-    return db;
-}
-
-fn parseGlobalMethods(self: *DocDatabase, allocator: Allocator, scanner: *Scanner) !void {
-    std.debug.assert(try scanner.next() == .array_begin);
-
-    while (true) {
-        const token = try scanner.next();
-        switch (token) {
-            .object_begin => {
-                const method = try self.parseEntry(.global_function, allocator, scanner);
-                try self.symbols.put(allocator, method.key, method);
-            },
-            .array_end => break,
-            .end_of_document => unreachable,
-            else => {},
-        }
-    }
-}
-
-fn parseClasses(self: *DocDatabase, comptime kind: EntryKind, allocator: Allocator, scanner: *Scanner) !void {
-    std.debug.assert(try scanner.next() == .array_begin);
-
-    while (true) {
-        const token = try scanner.next();
-        switch (token) {
-            .object_begin => {
-                try self.parseClass(kind, allocator, scanner);
-            },
-            .array_end => break,
-            .end_of_document => unreachable,
-            else => {},
-        }
-    }
-}
-
-const ClassKey = enum {
-    name,
-    methods,
-    properties,
-    signals,
-    constants,
-    description,
-    brief_description,
-    enums,
-};
-
 fn bbcodeToMarkdown(allocator: Allocator, input: []const u8) ![]const u8 {
     var output: std.Io.Writer.Allocating = .init(allocator);
 
@@ -150,258 +49,6 @@ fn bbcodeToMarkdown(allocator: Allocator, input: []const u8) ![]const u8 {
     try bbcodez.fmt.md.renderDocument(allocator, bbcode_doc, &output.writer, .{});
 
     return try output.toOwnedSlice();
-}
-
-fn parseClass(self: *DocDatabase, comptime kind: EntryKind, allocator: Allocator, scanner: *Scanner) !void {
-    var entry: Entry = .{
-        .name = undefined,
-        .key = undefined,
-        .kind = kind,
-    };
-
-    var methods: []Entry = &.{};
-    var properties: []Entry = &.{};
-    var signals: []Entry = &.{};
-    var constants: []Entry = &.{};
-    var enums: []Entry = &.{};
-
-    while (true) {
-        const token = try scanner.next();
-        switch (token) {
-            .string => |s| {
-                std.debug.assert(scanner.string_is_object_key);
-                const class_key = std.meta.stringToEnum(ClassKey, s) orelse {
-                    try scanner.skipValue();
-                    continue;
-                };
-
-                switch (class_key) {
-                    .name => {
-                        const name = try scanner.next();
-                        std.debug.assert(name == .string);
-
-                        entry.name = try allocator.dupe(u8, name.string);
-                        entry.key = entry.name;
-                    },
-                    .methods => methods = try self.parseEntryArray(.method, allocator, scanner),
-                    .properties => properties = try self.parseEntryArray(.property, allocator, scanner),
-                    .signals => signals = try self.parseEntryArray(.signal, allocator, scanner),
-                    .constants => constants = try self.parseEntryArray(.constant, allocator, scanner),
-                    .enums => enums = try self.parseEntryArray(.enum_value, allocator, scanner),
-                    .brief_description => entry.brief_description = try nextTokenToMarkdownAlloc(allocator, scanner),
-                    .description => entry.description = try nextTokenToMarkdownAlloc(allocator, scanner),
-                }
-            },
-            .object_end => break,
-            .end_of_document => unreachable,
-            else => {},
-        }
-    }
-
-    try self.symbols.put(allocator, entry.key, entry);
-    const entry_idx = self.symbols.getIndex(entry.name).?;
-
-    const member_count = methods.len + properties.len + signals.len + constants.len + enums.len;
-
-    var member_indices: ArrayList(usize) = .empty;
-    defer member_indices.deinit(allocator);
-    try member_indices.ensureTotalCapacity(allocator, member_count);
-
-    try self.appendEntries(allocator, entry, entry_idx, methods, &member_indices);
-    try self.appendEntries(allocator, entry, entry_idx, properties, &member_indices);
-    try self.appendEntries(allocator, entry, entry_idx, signals, &member_indices);
-    try self.appendEntries(allocator, entry, entry_idx, constants, &member_indices);
-    try self.appendEntries(allocator, entry, entry_idx, enums, &member_indices);
-
-    if (member_indices.items.len > 0) {
-        var entry_ptr = self.symbols.getPtr(entry.key).?;
-        entry_ptr.members = try member_indices.toOwnedSlice(allocator);
-    }
-}
-
-fn appendEntries(self: *DocDatabase, allocator: Allocator, parent: Entry, parent_idx: usize, entries: []Entry, indices: *ArrayList(usize)) !void {
-    for (entries) |*property_entry| {
-        property_entry.parent_index = parent_idx;
-        property_entry.key = try std.fmt.allocPrint(allocator, "{s}.{s}", .{ parent.name, property_entry.name });
-
-        // store property entry in the database
-        try self.symbols.put(allocator, property_entry.key, property_entry.*);
-
-        // update property index on the parent entry
-        const property_index = self.symbols.getIndex(property_entry.key).?;
-        indices.appendAssumeCapacity(property_index);
-    }
-}
-
-const MethodKey = enum {
-    name,
-    description,
-};
-
-const PropertyKey = enum {
-    name,
-    type,
-    getter,
-    setter,
-    description,
-};
-
-const ConstantKey = enum {
-    name,
-    description,
-};
-
-const SignalKey = enum {
-    name,
-    description,
-};
-
-const EnumKey = enum {
-    name,
-    description,
-};
-
-const kind_key_map: std.StaticStringMap(type) = .initComptime(.{
-    .{ @tagName(EntryKind.method), MethodKey },
-    .{ @tagName(EntryKind.constant), ConstantKey },
-    .{ @tagName(EntryKind.signal), SignalKey },
-    .{ @tagName(EntryKind.enum_value), EnumKey },
-    .{ @tagName(EntryKind.property), PropertyKey },
-    .{ @tagName(EntryKind.global_function), MethodKey },
-});
-
-const constant_handler_map: std.StaticStringMap(*const fn (Allocator, *Entry, *Scanner) anyerror!void) = .initComptime(.{
-    .{ @tagName(ConstantKey.name), handleEntryName },
-    .{ @tagName(ConstantKey.description), handleEntryDescription },
-});
-
-const method_handler_map: std.StaticStringMap(*const fn (Allocator, *Entry, *Scanner) anyerror!void) = .initComptime(.{
-    .{ @tagName(MethodKey.name), handleEntryName },
-    .{ @tagName(MethodKey.description), handleEntryDescription },
-});
-
-const signal_handler_map: std.StaticStringMap(*const fn (Allocator, *Entry, *Scanner) anyerror!void) = .initComptime(.{
-    .{ @tagName(SignalKey.name), handleEntryName },
-    .{ @tagName(SignalKey.description), handleEntryDescription },
-});
-
-const enum_value_handler_map: std.StaticStringMap(*const fn (Allocator, *Entry, *Scanner) anyerror!void) = .initComptime(.{
-    .{ @tagName(EnumKey.name), handleEntryName },
-    .{ @tagName(EnumKey.description), handleEntryDescription },
-});
-
-const property_handler_map: std.StaticStringMap(*const fn (Allocator, *Entry, *Scanner) anyerror!void) = .initComptime(.{
-    .{ @tagName(PropertyKey.name), handleEntryName },
-    .{ @tagName(PropertyKey.type), handlePropertyType },
-    .{ @tagName(PropertyKey.getter), skipValue },
-    .{ @tagName(PropertyKey.setter), skipValue },
-    // TODO: bbcodez throws for some reason
-    // .{ @tagName(PropertyKey.description), handleEntryDescription },
-});
-
-const kind_handler_map: std.StaticStringMap(std.StaticStringMap(*const fn (Allocator, *Entry, *Scanner) anyerror!void)) = .initComptime(.{
-    .{ @tagName(EntryKind.constant), constant_handler_map },
-    .{ @tagName(EntryKind.signal), signal_handler_map },
-    .{ @tagName(EntryKind.enum_value), enum_value_handler_map },
-    .{ @tagName(EntryKind.property), property_handler_map },
-    .{ @tagName(EntryKind.method), method_handler_map },
-    .{ @tagName(EntryKind.global_function), method_handler_map },
-});
-
-fn handleEntryName(allocator: Allocator, entry: *Entry, scanner: *Scanner) anyerror!void {
-    const name = try scanner.next();
-    std.debug.assert(name == .string);
-
-    entry.name = try allocator.dupe(u8, name.string);
-    entry.key = entry.name;
-}
-
-fn handlePropertyType(allocator: Allocator, entry: *Entry, scanner: *Scanner) anyerror!void {
-    const @"type" = try scanner.next();
-    std.debug.assert(@"type" == .string);
-    entry.signature = try std.fmt.allocPrint(allocator, ": {s}", .{@"type".string});
-}
-
-fn handleEntryDescription(allocator: Allocator, entry: *Entry, scanner: *Scanner) anyerror!void {
-    entry.description = try nextTokenToMarkdownAlloc(allocator, scanner);
-}
-
-fn skipValue(allocator: Allocator, entry: *Entry, scanner: *Scanner) anyerror!void {
-    _ = allocator;
-    _ = entry;
-    try scanner.skipValue();
-}
-
-fn parseEntry(self: *const DocDatabase, comptime kind: EntryKind, allocator: Allocator, scanner: *Scanner) !Entry {
-    _ = self; // autofix
-
-    var entry: Entry = .{
-        .name = undefined,
-        .key = undefined,
-        .kind = kind,
-    };
-
-    const KeyType = kind_key_map.get(@tagName(kind)) orelse @compileError("No key type found for kind: " ++ @tagName(kind));
-    const handlers = kind_handler_map.get(@tagName(kind)) orelse std.debug.panic("No handlers found for kind: {}", .{kind});
-
-    while (true) {
-        const token = try scanner.next();
-        switch (token) {
-            .string => |s| {
-                std.debug.assert(scanner.string_is_object_key);
-                const key = std.meta.stringToEnum(KeyType, s) orelse {
-                    try scanner.skipValue();
-                    continue;
-                };
-
-                const handler = handlers.get(@tagName(key)) orelse {
-                    parser_log.warn("No handler found for key: {s}.{s}", .{ @tagName(kind), @tagName(key) });
-                    try scanner.skipValue();
-                    continue;
-                };
-
-                try handler(allocator, &entry, scanner);
-            },
-            .object_end => break,
-            .end_of_document => unreachable,
-            else => {},
-        }
-    }
-
-    return entry;
-}
-
-fn parseEntryArray(self: *const DocDatabase, comptime kind: EntryKind, allocator: Allocator, scanner: *Scanner) ![]Entry {
-    var entries: ArrayList(Entry) = .empty;
-    defer entries.deinit(allocator);
-
-    const constants_token = try scanner.next();
-    std.debug.assert(constants_token == .array_begin);
-
-    while (true) {
-        const constant_token = try scanner.next();
-        switch (constant_token) {
-            .object_begin => {
-                try entries.append(allocator, try self.parseEntry(kind, allocator, scanner));
-            },
-            .array_end => break,
-            .end_of_document => unreachable,
-            else => {},
-        }
-    }
-
-    return entries.toOwnedSlice(allocator);
-}
-
-fn nextTokenToMarkdownAlloc(allocator: Allocator, scanner: *Scanner) ![]const u8 {
-    const token = try scanner.nextAlloc(allocator, .alloc_if_needed);
-
-    const value = switch (token) {
-        inline .string, .allocated_string => |str| str,
-        else => unreachable,
-    };
-
-    return try bbcodeToMarkdown(allocator, value);
 }
 
 pub fn lookupSymbolExact(self: DocDatabase, symbol: []const u8) DocDatabase.Error!Entry {
@@ -449,14 +96,24 @@ pub fn loadFromXmlDir(arena_allocator: Allocator, tmp_allocator: Allocator, xml_
             break :blk result;
         } else null;
 
+        // Convert BBCode descriptions to Markdown
+        const description = if (class_doc.description) |desc|
+            bbcodeToMarkdown(arena_allocator, desc) catch desc
+        else
+            null;
+        const brief_description = if (class_doc.brief_description) |desc|
+            bbcodeToMarkdown(arena_allocator, desc) catch desc
+        else
+            null;
+
         // Create class entry
         const class_key = class_doc.name;
         try db.symbols.put(arena_allocator, class_key, .{
             .key = class_key,
             .name = class_key,
             .kind = .class,
-            .description = class_doc.description,
-            .brief_description = class_doc.brief_description,
+            .description = description,
+            .brief_description = brief_description,
             .inherits = class_doc.inherits,
             .tutorials = db_tutorials,
         });
@@ -474,12 +131,16 @@ pub fn loadFromXmlDir(arena_allocator: Allocator, tmp_allocator: Allocator, xml_
                 const sig = try buildMethodSignature(arena_allocator, method);
                 const dotted_key = try std.fmt.allocPrint(arena_allocator, "{s}.{s}", .{ class_doc.name, method.name });
                 const child_kind: EntryKind = if (is_global_scope or is_gdscript) .global_function else .method;
+                const desc = if (method.description) |d|
+                    bbcodeToMarkdown(arena_allocator, d) catch d
+                else
+                    null;
                 const child: Entry = .{
                     .key = dotted_key,
                     .name = method.name,
                     .parent_index = class_idx,
                     .kind = child_kind,
-                    .description = method.description,
+                    .description = desc,
                     .signature = sig,
                     .qualifiers = method.qualifiers,
                 };
@@ -501,12 +162,16 @@ pub fn loadFromXmlDir(arena_allocator: Allocator, tmp_allocator: Allocator, xml_
             for (properties) |prop| {
                 const sig = try buildPropertySignature(arena_allocator, prop);
                 const dotted_key = try std.fmt.allocPrint(arena_allocator, "{s}.{s}", .{ class_doc.name, prop.name });
+                const desc = if (prop.description) |d|
+                    bbcodeToMarkdown(arena_allocator, d) catch d
+                else
+                    null;
                 const child: Entry = .{
                     .key = dotted_key,
                     .name = prop.name,
                     .parent_index = class_idx,
                     .kind = .property,
-                    .description = prop.description,
+                    .description = desc,
                     .signature = sig,
                     .default_value = prop.default_value,
                 };
@@ -521,12 +186,16 @@ pub fn loadFromXmlDir(arena_allocator: Allocator, tmp_allocator: Allocator, xml_
             for (signals) |signal| {
                 const sig = try buildSignalSignature(arena_allocator, signal);
                 const dotted_key = try std.fmt.allocPrint(arena_allocator, "{s}.{s}", .{ class_doc.name, signal.name });
+                const desc = if (signal.description) |d|
+                    bbcodeToMarkdown(arena_allocator, d) catch d
+                else
+                    null;
                 const child: Entry = .{
                     .key = dotted_key,
                     .name = signal.name,
                     .parent_index = class_idx,
                     .kind = .signal,
-                    .description = signal.description,
+                    .description = desc,
                     .signature = sig,
                 };
                 try db.symbols.put(arena_allocator, dotted_key, child);
@@ -539,6 +208,10 @@ pub fn loadFromXmlDir(arena_allocator: Allocator, tmp_allocator: Allocator, xml_
         if (class_doc.constants) |constants| {
             for (constants) |constant| {
                 const sig = try buildConstantSignature(arena_allocator, constant);
+                const desc = if (constant.description) |d|
+                    bbcodeToMarkdown(arena_allocator, d) catch d
+                else
+                    null;
                 if (constant.qualifiers) |enum_name| {
                     // Enum-grouped constant: "ClassName.EnumName.VALUE_NAME"
                     const dotted_key = try std.fmt.allocPrint(arena_allocator, "{s}.{s}.{s}", .{ class_doc.name, enum_name, constant.name });
@@ -547,7 +220,7 @@ pub fn loadFromXmlDir(arena_allocator: Allocator, tmp_allocator: Allocator, xml_
                         .name = constant.name,
                         .parent_index = class_idx,
                         .kind = .enum_value,
-                        .description = constant.description,
+                        .description = desc,
                         .signature = sig,
                         .qualifiers = constant.qualifiers,
                         .default_value = constant.default_value,
@@ -563,7 +236,7 @@ pub fn loadFromXmlDir(arena_allocator: Allocator, tmp_allocator: Allocator, xml_
                         .name = constant.name,
                         .parent_index = class_idx,
                         .kind = .constant,
-                        .description = constant.description,
+                        .description = desc,
                         .signature = sig,
                         .default_value = constant.default_value,
                     };
@@ -579,12 +252,16 @@ pub fn loadFromXmlDir(arena_allocator: Allocator, tmp_allocator: Allocator, xml_
             for (constructors) |ctor| {
                 const sig = try buildConstructorSignature(arena_allocator, ctor);
                 const dotted_key = try std.fmt.allocPrint(arena_allocator, "{s}.{s}", .{ class_doc.name, ctor.name });
+                const desc = if (ctor.description) |d|
+                    bbcodeToMarkdown(arena_allocator, d) catch d
+                else
+                    null;
                 const child: Entry = .{
                     .key = dotted_key,
                     .name = ctor.name,
                     .parent_index = class_idx,
                     .kind = .constructor,
-                    .description = ctor.description,
+                    .description = desc,
                     .signature = sig,
                 };
                 // Constructors may have duplicate keys (overloads); only keep first
@@ -601,12 +278,16 @@ pub fn loadFromXmlDir(arena_allocator: Allocator, tmp_allocator: Allocator, xml_
             for (operators) |op| {
                 const sig = try buildOperatorSignature(arena_allocator, op);
                 const dotted_key = try std.fmt.allocPrint(arena_allocator, "{s}.{s}", .{ class_doc.name, op.name });
+                const desc = if (op.description) |d|
+                    bbcodeToMarkdown(arena_allocator, d) catch d
+                else
+                    null;
                 const child: Entry = .{
                     .key = dotted_key,
                     .name = op.name,
                     .parent_index = class_idx,
                     .kind = .operator,
-                    .description = op.description,
+                    .description = desc,
                     .signature = sig,
                 };
                 if (db.symbols.get(dotted_key) == null) {
@@ -848,493 +529,6 @@ fn formatMemberLine(self: DocDatabase, member_idx: usize, writer: *Writer) !void
 
 pub fn generateMarkdownForSymbol(self: DocDatabase, allocator: Allocator, symbol: []const u8, writer: *Writer) !void {
     try self.generateMarkdownForEntry(allocator, self.symbols.get(symbol) orelse return error.SymbolNotFound, writer);
-}
-
-test "parse simple builtin class from JSON" {
-    var arena = ArenaAllocator.init(std.testing.allocator);
-    const allocator = arena.allocator();
-    defer arena.deinit();
-
-    // Minimal JSON with one builtin class
-    const json_source =
-        \\{
-        \\  "builtin_classes": [
-        \\    {
-        \\      "name": "bool"
-        \\    }
-        \\  ]
-        \\}
-    ;
-
-    var json_scanner = Scanner.initCompleteInput(allocator, json_source);
-
-    const db = try DocDatabase.loadFromJsonLeaky(allocator, &json_scanner);
-
-    // Verify the class was parsed
-    const entry = db.symbols.get("bool");
-    try std.testing.expect(entry != null);
-    try std.testing.expectEqualStrings("bool", entry.?.name);
-    try std.testing.expectEqual(EntryKind.class, entry.?.kind);
-}
-
-test "parse regular class from JSON" {
-    var arena = ArenaAllocator.init(std.testing.allocator);
-    const allocator = arena.allocator();
-    defer arena.deinit();
-
-    const json_source =
-        \\{
-        \\  "classes": [
-        \\    {
-        \\      "name": "Node2D"
-        \\    }
-        \\  ]
-        \\}
-    ;
-
-    var json_scanner = Scanner.initCompleteInput(allocator, json_source);
-    const db = try DocDatabase.loadFromJsonLeaky(allocator, &json_scanner);
-
-    const entry = db.symbols.get("Node2D");
-    try std.testing.expect(entry != null);
-    try std.testing.expectEqualStrings("Node2D", entry.?.name);
-    try std.testing.expectEqual(EntryKind.class, entry.?.kind);
-}
-
-test "parse method with parent" {
-    var arena = ArenaAllocator.init(std.testing.allocator);
-    const allocator = arena.allocator();
-    defer arena.deinit();
-
-    const json_source =
-        \\{
-        \\  "classes": [
-        \\    {
-        \\      "name": "Node2D",
-        \\      "methods": [
-        \\        {
-        \\          "name": "get_global_position"
-        \\        }
-        \\      ]
-        \\    }
-        \\  ]
-        \\}
-    ;
-
-    var json_scanner = Scanner.initCompleteInput(allocator, json_source);
-    const db = try DocDatabase.loadFromJsonLeaky(allocator, &json_scanner);
-
-    // Verify the class exists
-    const class_entry = db.symbols.get("Node2D");
-    try std.testing.expect(class_entry != null);
-
-    // Verify the method exists with correct full_path
-    const method_entry = db.symbols.get("Node2D.get_global_position");
-    try std.testing.expect(method_entry != null);
-    try std.testing.expectEqualStrings("get_global_position", method_entry.?.name);
-    try std.testing.expectEqualStrings("Node2D.get_global_position", method_entry.?.key);
-    try std.testing.expectEqual(EntryKind.method, method_entry.?.kind);
-
-    // Verify parent points to the class
-    try std.testing.expect(method_entry.?.parent_index != null);
-
-    const parent = db.symbols.values()[method_entry.?.parent_index.?];
-    try std.testing.expectEqualStrings("Node2D", parent.name);
-}
-
-test "parse utility functions as global functions" {
-    var arena = ArenaAllocator.init(std.testing.allocator);
-    const allocator = arena.allocator();
-    defer arena.deinit();
-
-    const json_source =
-        \\{
-        \\  "utility_functions": [
-        \\    {
-        \\      "name": "sin"
-        \\    }
-        \\  ]
-        \\}
-    ;
-
-    var json_scanner = Scanner.initCompleteInput(allocator, json_source);
-    const db = try DocDatabase.loadFromJsonLeaky(allocator, &json_scanner);
-
-    const entry = db.symbols.get("sin");
-    try std.testing.expect(entry != null);
-    try std.testing.expectEqualStrings("sin", entry.?.name);
-    try std.testing.expectEqualStrings("sin", entry.?.key);
-    try std.testing.expectEqual(EntryKind.global_function, entry.?.kind);
-    try std.testing.expect(entry.?.parent_index == null); // No parent
-}
-
-test "class stores member indices not strings" {
-    var arena = ArenaAllocator.init(std.testing.allocator);
-    const allocator = arena.allocator();
-    defer arena.deinit();
-
-    const json_source =
-        \\{
-        \\  "classes": [
-        \\    {
-        \\      "name": "Vector2",
-        \\      "methods": [
-        \\        {
-        \\          "name": "normalized"
-        \\        },
-        \\        {
-        \\          "name": "length"
-        \\        }
-        \\      ]
-        \\    }
-        \\  ]
-        \\}
-    ;
-
-    var json_scanner = Scanner.initCompleteInput(allocator, json_source);
-    const db = try DocDatabase.loadFromJsonLeaky(allocator, &json_scanner);
-
-    // Verify the class has members array
-    const class_entry = db.symbols.get("Vector2");
-    try std.testing.expect(class_entry != null);
-    try std.testing.expect(class_entry.?.members != null);
-
-    // Should have 2 members
-    const members = class_entry.?.members.?;
-    try std.testing.expectEqual(@as(usize, 2), members.len);
-
-    // Members should be indices into the symbols array
-    const first_member = db.symbols.values()[members[0]];
-    const second_member = db.symbols.values()[members[1]];
-
-    // Verify members are the methods
-    try std.testing.expectEqualStrings("normalized", first_member.name);
-    try std.testing.expectEqual(EntryKind.method, first_member.kind);
-
-    try std.testing.expectEqualStrings("length", second_member.name);
-    try std.testing.expectEqual(EntryKind.method, second_member.kind);
-}
-
-test "convert BBCode description to Markdown" {
-    var arena = ArenaAllocator.init(std.testing.allocator);
-    const allocator = arena.allocator();
-    defer arena.deinit();
-
-    const json_source =
-        \\{
-        \\  "classes": [
-        \\    {
-        \\      "name": "Node2D",
-        \\      "brief_description": "A 2D game object with [b]position[/b] and [i]rotation[/i]."
-        \\    }
-        \\  ]
-        \\}
-    ;
-
-    var json_scanner = Scanner.initCompleteInput(allocator, json_source);
-    const db = try DocDatabase.loadFromJsonLeaky(allocator, &json_scanner);
-
-    const entry = db.symbols.get("Node2D");
-    try std.testing.expect(entry != null);
-    try std.testing.expect(entry.?.brief_description != null);
-
-    // BBCode should be converted to Markdown
-    // [b]text[/b] -> **text**
-    // [i]text[/i] -> *text*
-    const expected = "A 2D game object with **position** and *rotation*.";
-    try std.testing.expectEqualStrings(expected, entry.?.brief_description.?);
-}
-
-test "skip unknown root-level keys like header" {
-    var arena = ArenaAllocator.init(std.testing.allocator);
-    const allocator = arena.allocator();
-    defer arena.deinit();
-
-    // JSON with all unknown root-level keys that should be skipped
-    const json_source =
-        \\{
-        \\  "header": {
-        \\    "version_major": 4,
-        \\    "version_minor": 5
-        \\  },
-        \\  "builtin_class_sizes": [
-        \\    {
-        \\      "build_configuration": "float_32",
-        \\      "sizes": [
-        \\        {
-        \\          "name": "bool",
-        \\          "size": 1
-        \\        }
-        \\      ]
-        \\    }
-        \\  ],
-        \\  "builtin_class_member_offsets": [],
-        \\  "global_constants": [],
-        \\  "global_enums": [],
-        \\  "native_structures": [],
-        \\  "singletons": [],
-        \\  "classes": [
-        \\    {
-        \\      "name": "Node2D"
-        \\    }
-        \\  ]
-        \\}
-    ;
-
-    var json_scanner = Scanner.initCompleteInput(allocator, json_source);
-    const db = try DocDatabase.loadFromJsonLeaky(allocator, &json_scanner);
-
-    // Should successfully parse despite unknown keys
-    const entry = db.symbols.get("Node2D");
-    try std.testing.expect(entry != null);
-    try std.testing.expectEqualStrings("Node2D", entry.?.name);
-}
-
-test "skip unknown method fields like return_type" {
-    var arena = ArenaAllocator.init(std.testing.allocator);
-    const allocator = arena.allocator();
-    defer arena.deinit();
-
-    // JSON with method containing fields beyond just "name"
-    const json_source =
-        \\{
-        \\  "utility_functions": [
-        \\    {
-        \\      "name": "sin",
-        \\      "return_type": "float",
-        \\      "category": "math",
-        \\      "is_vararg": false,
-        \\      "hash": 12345,
-        \\      "arguments": []
-        \\    }
-        \\  ]
-        \\}
-    ;
-
-    var json_scanner = Scanner.initCompleteInput(allocator, json_source);
-    const db = try DocDatabase.loadFromJsonLeaky(allocator, &json_scanner);
-
-    // Should successfully parse method despite unknown fields
-    const entry = db.symbols.get("sin");
-    try std.testing.expect(entry != null);
-    try std.testing.expectEqualStrings("sin", entry.?.name);
-    try std.testing.expectEqual(EntryKind.global_function, entry.?.kind);
-}
-
-test "skip unknown class fields like api_type" {
-    var arena = ArenaAllocator.init(std.testing.allocator);
-    const allocator = arena.allocator();
-    defer arena.deinit();
-
-    // JSON with class containing fields beyond name/methods/brief_description
-    const json_source =
-        \\{
-        \\  "classes": [
-        \\    {
-        \\      "name": "Node2D",
-        \\      "api_type": "core",
-        \\      "inherits": "CanvasItem",
-        \\      "is_instantiable": true,
-        \\      "is_refcounted": false,
-        \\      "description": "A 2D game object.",
-        \\      "enums": []
-        \\    }
-        \\  ]
-        \\}
-    ;
-
-    var json_scanner = Scanner.initCompleteInput(allocator, json_source);
-    const db = try DocDatabase.loadFromJsonLeaky(allocator, &json_scanner);
-
-    // Should successfully parse class despite unknown fields
-    const entry = db.symbols.get("Node2D");
-    try std.testing.expect(entry != null);
-    try std.testing.expectEqualStrings("Node2D", entry.?.name);
-    try std.testing.expectEqual(EntryKind.class, entry.?.kind);
-}
-
-// RED PHASE: Test parsing properties from class
-test "parse class with properties array" {
-    var arena = ArenaAllocator.init(std.testing.allocator);
-    const allocator = arena.allocator();
-    defer arena.deinit();
-
-    const json_source =
-        \\{
-        \\  "classes": [
-        \\    {
-        \\      "name": "Node2D",
-        \\      "properties": [
-        \\        {
-        \\          "name": "position",
-        \\          "type": "Vector2",
-        \\          "setter": "set_position",
-        \\          "getter": "get_position"
-        \\        }
-        \\      ]
-        \\    }
-        \\  ]
-        \\}
-    ;
-
-    var json_scanner = Scanner.initCompleteInput(allocator, json_source);
-    const db = try DocDatabase.loadFromJsonLeaky(allocator, &json_scanner);
-
-    // Verify the class has members with the property
-    const class_entry = db.symbols.get("Node2D");
-    try std.testing.expect(class_entry != null);
-    try std.testing.expect(class_entry.?.members != null);
-    try std.testing.expectEqual(@as(usize, 1), class_entry.?.members.?.len);
-
-    // Verify the property entry exists
-    const property_entry = db.symbols.get("Node2D.position");
-    try std.testing.expect(property_entry != null);
-    try std.testing.expectEqualStrings("position", property_entry.?.name);
-    try std.testing.expectEqualStrings("Node2D.position", property_entry.?.key);
-    try std.testing.expectEqual(EntryKind.property, property_entry.?.kind);
-
-    // Verify property is in the class members
-    const member = db.symbols.values()[class_entry.?.members.?[0]];
-    try std.testing.expectEqualStrings("position", member.name);
-    try std.testing.expectEqual(EntryKind.property, member.kind);
-}
-
-// RED PHASE: Test parsing signals from class
-test "parse class with signals array" {
-    var arena = ArenaAllocator.init(std.testing.allocator);
-    const allocator = arena.allocator();
-    defer arena.deinit();
-
-    const json_source =
-        \\{
-        \\  "classes": [
-        \\    {
-        \\      "name": "Area2D",
-        \\      "signals": [
-        \\        {
-        \\          "name": "body_entered",
-        \\          "description": "Emitted when a body enters."
-        \\        }
-        \\      ]
-        \\    }
-        \\  ]
-        \\}
-    ;
-
-    var json_scanner = Scanner.initCompleteInput(allocator, json_source);
-    const db = try DocDatabase.loadFromJsonLeaky(allocator, &json_scanner);
-
-    // Verify the class has members with the signal
-    const class_entry = db.symbols.get("Area2D");
-    try std.testing.expect(class_entry != null);
-    try std.testing.expect(class_entry.?.members != null);
-    try std.testing.expectEqual(@as(usize, 1), class_entry.?.members.?.len);
-
-    // Verify the signal entry exists
-    const signal_entry = db.symbols.get("Area2D.body_entered");
-    try std.testing.expect(signal_entry != null);
-    try std.testing.expectEqualStrings("body_entered", signal_entry.?.name);
-    try std.testing.expectEqualStrings("Area2D.body_entered", signal_entry.?.key);
-    try std.testing.expectEqual(EntryKind.signal, signal_entry.?.kind);
-
-    // Verify signal is in the class members
-    const member = db.symbols.values()[class_entry.?.members.?[0]];
-    try std.testing.expectEqualStrings("body_entered", member.name);
-    try std.testing.expectEqual(EntryKind.signal, member.kind);
-}
-
-// RED PHASE: Test parsing constants from class
-test "parse class with constants array" {
-    var arena = ArenaAllocator.init(std.testing.allocator);
-    const allocator = arena.allocator();
-    defer arena.deinit();
-
-    const json_source =
-        \\{
-        \\  "classes": [
-        \\    {
-        \\      "name": "Node",
-        \\      "constants": [
-        \\        {
-        \\          "name": "NOTIFICATION_READY",
-        \\          "value": 30
-        \\        }
-        \\      ]
-        \\    }
-        \\  ]
-        \\}
-    ;
-
-    var json_scanner = Scanner.initCompleteInput(allocator, json_source);
-    const db = try DocDatabase.loadFromJsonLeaky(allocator, &json_scanner);
-
-    // Verify the class has members with the constant
-    const class_entry = db.symbols.get("Node");
-    try std.testing.expect(class_entry != null);
-    try std.testing.expect(class_entry.?.members != null);
-    try std.testing.expectEqual(@as(usize, 1), class_entry.?.members.?.len);
-
-    // Verify the constant entry exists
-    const constant_entry = db.symbols.get("Node.NOTIFICATION_READY");
-    try std.testing.expect(constant_entry != null);
-    try std.testing.expectEqualStrings("NOTIFICATION_READY", constant_entry.?.name);
-    try std.testing.expectEqualStrings("Node.NOTIFICATION_READY", constant_entry.?.key);
-    try std.testing.expectEqual(EntryKind.constant, constant_entry.?.kind);
-
-    // Verify constant is in the class members
-    const member = db.symbols.values()[class_entry.?.members.?[0]];
-    try std.testing.expectEqualStrings("NOTIFICATION_READY", member.name);
-    try std.testing.expectEqual(EntryKind.constant, member.kind);
-}
-
-// RED PHASE: Test parsing enums from class
-test "parse class with enums array" {
-    var arena = ArenaAllocator.init(std.testing.allocator);
-    const allocator = arena.allocator();
-    defer arena.deinit();
-
-    const json_source =
-        \\{
-        \\  "classes": [
-        \\    {
-        \\      "name": "AESContext",
-        \\      "enums": [
-        \\        {
-        \\          "name": "Mode",
-        \\          "is_bitfield": false,
-        \\          "values": [
-        \\            {
-        \\              "name": "MODE_ECB_ENCRYPT",
-        \\              "value": 0
-        \\            }
-        \\          ]
-        \\        }
-        \\      ]
-        \\    }
-        \\  ]
-        \\}
-    ;
-
-    var json_scanner = Scanner.initCompleteInput(allocator, json_source);
-    const db = try DocDatabase.loadFromJsonLeaky(allocator, &json_scanner);
-
-    // Verify the class has members with the enum
-    const class_entry = db.symbols.get("AESContext");
-    try std.testing.expect(class_entry != null);
-    try std.testing.expect(class_entry.?.members != null);
-    try std.testing.expectEqual(@as(usize, 1), class_entry.?.members.?.len);
-
-    // Verify the enum value entry exists
-    const enum_entry = db.symbols.get("AESContext.Mode");
-    try std.testing.expect(enum_entry != null);
-    try std.testing.expectEqualStrings("Mode", enum_entry.?.name);
-    try std.testing.expectEqualStrings("AESContext.Mode", enum_entry.?.key);
-    try std.testing.expectEqual(EntryKind.enum_value, enum_entry.?.kind);
-
-    // Verify enum value is in the class members
-    const member = db.symbols.values()[class_entry.?.members.?[0]];
-    try std.testing.expectEqualStrings("Mode", member.name);
-    try std.testing.expectEqual(EntryKind.enum_value, member.kind);
 }
 
 // RED PHASE: Tests for DocDatabase.generateMarkdownForSymbol using snapshot testing
@@ -1823,15 +1017,38 @@ test "loadFromXmlDir registers GlobalScope functions as top-level entries" {
     try std.testing.expectEqual(EntryKind.global_function, top_entry.kind);
 }
 
+test "loadFromXmlDir converts BBCode descriptions to Markdown" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const tmp_path = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(tmp_path);
+
+    const xml_content =
+        \\<?xml version="1.0" encoding="UTF-8" ?>
+        \\<class name="TestBBCode">
+        \\    <brief_description>Has [b]bold[/b] text.</brief_description>
+        \\    <description>Uses [code]code[/code] and [i]italic[/i].</description>
+        \\</class>
+    ;
+    try tmp_dir.dir.writeFile(.{ .sub_path = "TestBBCode.xml", .data = xml_content });
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const db = try DocDatabase.loadFromXmlDir(arena.allocator(), allocator, tmp_path);
+    const entry = db.symbols.get("TestBBCode").?;
+
+    // BBCode should be converted to Markdown
+    try std.testing.expect(std.mem.indexOf(u8, entry.brief_description.?, "**bold**") != null);
+    try std.testing.expect(std.mem.indexOf(u8, entry.description.?, "`code`") != null);
+}
+
 const std = @import("std");
 const ArenaAllocator = std.heap.ArenaAllocator;
 const Allocator = std.mem.Allocator;
-const Scanner = std.json.Scanner;
-const Reader = std.json.Reader;
-const Token = std.json.Token;
 const StringArrayHashMap = std.StringArrayHashMapUnmanaged;
 const ArrayList = std.ArrayListUnmanaged;
-const File = std.fs.File;
 const Writer = std.Io.Writer;
 
 const bbcodez = @import("bbcodez");
