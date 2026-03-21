@@ -21,7 +21,7 @@
 - `src/cache.zig` — Remove `getJsonCachePathInDir`, update `cacheIsPopulated` to check `Object/index.md` instead of JSON file
 - `src/Config.zig` — Remove `no_xml` field, update `Config.testing`
 - `src/cli/root.zig` — Remove `--godot-extension-api` flag, update error handling
-- `build.zig` — Remove `bbcodez` from module imports (it's only used by JSON parsing in DocDatabase), keep `xml`
+- `build.zig` — Keep `bbcodez` (still needed for BBCode→Markdown in descriptions), keep `xml`
 
 **Delete:**
 - `src/api.zig` — Entire file
@@ -277,7 +277,7 @@ var operators: std.ArrayListUnmanaged(MemberDoc) = .empty;
 defer operators.deinit(allocator);
 ```
 
-Add element handlers for `<constructor>` and `<operator>` — reuse the same `parseMethodElement` function from Task 1 since they have identical XML structure (name, return, params, description).
+Add element handlers for `<constructor>`, `<operator>`, and `<signal>` — reuse the same `parseMethodElement` function from Task 1 since they all have identical XML structure (name, optional return, optional params, description). Update the existing `<signal>` handler to use `parseMethodElement` so signal params are captured (e.g., `child_entered_tree(node: Node)`).
 
 Update `freeClassDoc` to free constructors and operators.
 
@@ -528,8 +528,9 @@ Add a new public function `loadFromXmlDir(arena_allocator: Allocator, tmp_alloca
       - Build `signature` string (see signature building rules below)
       - Set `qualifiers`, `default_value` from parsed data
       - Put into `symbols`, track index for parent's `members` array
+      - **Enum grouping for constants:** If a constant has an `enum` attribute (stored in `qualifiers` by the parser), key it as `"ClassName.EnumName.VALUE_NAME"` with `kind = .enum_value`. Constants without `enum` attribute are keyed as `"ClassName.CONSTANT_NAME"` with `kind = .constant`.
    e. Update class entry's `members` with collected indices
-4. Handle `@GlobalScope.xml` and `@GDScript.xml`: also register their methods as top-level entries (e.g., both `"@GlobalScope.sin"` and `"sin"`). `@GlobalScope` entries take precedence.
+4. Handle `@GlobalScope.xml` and `@GDScript.xml`: also register their methods as top-level entries with `kind = .global_function` (not `.method`), e.g., both `"@GlobalScope.sin"` and `"sin"`. `@GlobalScope` entries take precedence over `@GDScript`.
 
 **Signature building rules:**
 - Methods: `(param: Type, param2: Type = default) -> ReturnType` (omit `-> void`)
@@ -545,7 +546,59 @@ Helper function `buildSignature(allocator, member, kind) !?[]const u8` handles t
 Run: `zig build test 2>&1 | grep -E "PASS|FAIL"`
 Expected: All tests pass
 
-- [ ] **Step 5: Write test for @GlobalScope dual-registration**
+- [ ] **Step 5: Write test for enum grouping in loadFromXmlDir**
+
+```zig
+test "loadFromXmlDir groups constants with enum attribute as enum_value entries" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const tmp_path = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(tmp_path);
+
+    const xml_content =
+        \\<?xml version="1.0" encoding="UTF-8" ?>
+        \\<class name="Node">
+        \\    <brief_description>Base class.</brief_description>
+        \\    <description>Base node.</description>
+        \\    <constants>
+        \\        <constant name="NOTIFICATION_READY" value="13">Ready.</constant>
+        \\        <constant name="PROCESS_MODE_INHERIT" value="0" enum="ProcessMode">Inherits.</constant>
+        \\        <constant name="PROCESS_MODE_ALWAYS" value="3" enum="ProcessMode">Always.</constant>
+        \\    </constants>
+        \\</class>
+    ;
+    try tmp_dir.dir.writeFile(.{ .sub_path = "Node.xml", .data = xml_content });
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const db = try DocDatabase.loadFromXmlDir(arena.allocator(), allocator, tmp_path);
+
+    // Regular constant: keyed as ClassName.CONSTANT_NAME
+    const notif = db.symbols.get("Node.NOTIFICATION_READY");
+    try std.testing.expect(notif != null);
+    try std.testing.expectEqual(EntryKind.constant, notif.?.kind);
+
+    // Enum constant: keyed as ClassName.EnumName.VALUE_NAME
+    const inherit = db.symbols.get("Node.ProcessMode.PROCESS_MODE_INHERIT");
+    try std.testing.expect(inherit != null);
+    try std.testing.expectEqual(EntryKind.enum_value, inherit.?.kind);
+
+    const always = db.symbols.get("Node.ProcessMode.PROCESS_MODE_ALWAYS");
+    try std.testing.expect(always != null);
+    try std.testing.expectEqual(EntryKind.enum_value, always.?.kind);
+}
+```
+
+- [ ] **Step 6: Run test to verify it passes**
+
+Run: `zig build test 2>&1 | grep -E "PASS|FAIL"`
+Expected: All tests pass
+
+- [ ] **Step 7: Write test for @GlobalScope dual-registration**
 
 ```zig
 test "loadFromXmlDir registers GlobalScope functions as top-level entries" {
@@ -585,12 +638,12 @@ test "loadFromXmlDir registers GlobalScope functions as top-level entries" {
 }
 ```
 
-- [ ] **Step 6: Run test to verify it passes**
+- [ ] **Step 8: Run test to verify it passes**
 
 Run: `zig build test 2>&1 | grep -E "PASS|FAIL"`
 Expected: All tests pass
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
 git add src/DocDatabase.zig
@@ -714,10 +767,10 @@ Remove from `src/DocDatabase.zig`:
 - `parseEntry` function
 - `parseEntryArray` function
 - `nextTokenToMarkdownAlloc` function
-- `bbcodeToMarkdown` function (only used by JSON parsing)
+- `bbcodeToMarkdown` function (only used by JSON parsing — keep a copy if needed by `loadFromXmlDir` for BBCode→Markdown conversion of descriptions)
 - All handler maps and handler functions (`MethodKey`, `ConstantKey`, `SignalKey`, `EnumKey`, `PropertyKey`, handler maps)
 - All JSON-related imports (`Scanner`, `Reader`, `Token`)
-- The `bbcodez` import
+- `InvalidApiJson` from the `Error` enum (this error was only produced by JSON parsing)
 - All tests that use `loadFromJsonLeaky` or `loadFromJsonFileLeaky` (tests at lines 511-996)
 
 - [ ] **Step 2: Remove bbcodez from DocDatabase module imports in build.zig**
@@ -728,12 +781,45 @@ Look at how descriptions flow: XML descriptions contain BBCode (`[b]`, `[code]`,
 
 Decision: Keep bbcodez, move BBCode→Markdown conversion to `loadFromXmlDir` (convert descriptions as they're stored in Entry). Copy the `bbcodeToMarkdown` helper function to be used by `loadFromXmlDir`.
 
-- [ ] **Step 3: Run tests to verify compilation**
+- [ ] **Step 3: Write test verifying BBCode conversion in loadFromXmlDir**
+
+```zig
+test "loadFromXmlDir converts BBCode descriptions to Markdown" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const tmp_path = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(tmp_path);
+
+    const xml_content =
+        \\<?xml version="1.0" encoding="UTF-8" ?>
+        \\<class name="TestBBCode">
+        \\    <brief_description>Has [b]bold[/b] text.</brief_description>
+        \\    <description>Uses [code]code[/code] and [i]italic[/i].</description>
+        \\</class>
+    ;
+    try tmp_dir.dir.writeFile(.{ .sub_path = "TestBBCode.xml", .data = xml_content });
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const db = try DocDatabase.loadFromXmlDir(arena.allocator(), allocator, tmp_path);
+    const entry = db.symbols.get("TestBBCode").?;
+
+    // BBCode should be converted to Markdown
+    try std.testing.expect(std.mem.indexOf(u8, entry.brief_description.?, "**bold**") != null);
+    try std.testing.expect(std.mem.indexOf(u8, entry.description.?, "`code`") != null);
+}
+```
+
+- [ ] **Step 4: Run tests to verify compilation and BBCode test passes**
 
 Run: `zig build test 2>&1 | grep -E "PASS|FAIL"`
-Expected: All remaining tests pass. JSON tests are gone.
+Expected: All remaining tests pass. JSON tests are gone. BBCode conversion test passes.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add src/DocDatabase.zig build.zig
@@ -873,12 +959,13 @@ git commit -m "refactor: update cacheIsPopulated to check XML marker + Object se
 
 ---
 
-### Task 11: Update CLI — remove --godot-extension-api flag
+### Task 11: Update CLI and root.zig — remove JSON paths, simplify cache flow
 
 **Files:**
 - Modify: `src/cli/root.zig`
+- Modify: `src/root.zig`
 
-- [ ] **Step 1: Remove flag and update runLookup**
+- [ ] **Step 1: Remove --godot-extension-api flag from CLI**
 
 In `src/cli/root.zig`:
 - Remove the `addFlag` block for `godot-extension-api` (lines 21-26)
@@ -887,31 +974,15 @@ In `src/cli/root.zig`:
 - Update `formatAndDisplay` call to remove `api_json_path` argument
 - Remove the `error.ApiFileNotFound` and `error.InvalidApiJson` error handlers
 
-- [ ] **Step 2: Run build to verify compilation**
-
-Run: `zig build 2>&1`
-Expected: Compilation errors in `root.zig` because `formatAndDisplay` signature hasn't changed yet. That's OK — Task 12 handles that.
-
-- [ ] **Step 3: Commit (can wait for Task 12)**
-
-Will commit together with root.zig changes.
-
----
-
-### Task 12: Update root.zig — remove JSON paths, simplify cache flow
-
-**Files:**
-- Modify: `src/root.zig`
-
-- [ ] **Step 1: Remove api_json_path from function signatures**
+- [ ] **Step 2: Remove api_json_path from function signatures in root.zig**
 
 Update `markdownForSymbol`, `formatAndDisplay`, and `renderWithZigdown` to remove `api_json_path: ?[]const u8` parameter.
 
-- [ ] **Step 2: Remove the JSON-direct-load codepath from markdownForSymbol**
+- [ ] **Step 3: Remove the JSON-direct-load codepath from markdownForSymbol**
 
 Delete the `if (api_json_file)` branch that loads JSON directly. The function now always uses the cache flow.
 
-- [ ] **Step 3: Simplify the cache rebuild flow**
+- [ ] **Step 4: Simplify the cache rebuild flow**
 
 Replace the current cache rebuild logic with:
 
@@ -973,15 +1044,16 @@ if (needs_full_rebuild) {
 }
 ```
 
-- [ ] **Step 4: Remove mergeXmlDocs and fetchXmlDocs functions**
+- [ ] **Step 5: Remove mergeXmlDocs and fetchXmlDocs functions**
 
 Delete both functions from `root.zig`.
 
-- [ ] **Step 5: Remove LookupError.ApiFileNotFound**
+- [ ] **Step 6: Remove error types for deleted codepaths**
 
-Remove from `LookupError` error set. Add `GodotNotFound` if not already there.
+- Remove `ApiFileNotFound` from `LookupError` error set in `root.zig`. Add `GodotNotFound` if not already there.
+- `InvalidApiJson` was already removed from `DocDatabase.Error` in Task 8.
 
-- [ ] **Step 6: Delete JSON fixture tests**
+- [ ] **Step 7: Delete JSON fixture tests**
 
 Delete tests in `root.zig` that create inline JSON or test `api_json_path`:
 - `markdownForSymbol returns ApiFileNotFound for nonexistent file`
@@ -994,16 +1066,16 @@ Delete tests in `root.zig` that create inline JSON or test `api_json_path`:
 
 Keep cache-flow tests but update them to not create `extension_api.json`.
 
-- [ ] **Step 7: Update imports**
+- [ ] **Step 8: Update imports**
 
 Remove `pub const api = @import("api.zig");` if not already done.
 
-- [ ] **Step 8: Run tests to verify everything compiles and passes**
+- [ ] **Step 9: Run tests to verify everything compiles and passes**
 
 Run: `zig build test 2>&1 | grep -E "PASS|FAIL"`
 Expected: All tests pass
 
-- [ ] **Step 9: Commit CLI and root.zig together**
+- [ ] **Step 10: Commit CLI and root.zig together**
 
 ```bash
 git add src/root.zig src/cli/root.zig
@@ -1012,7 +1084,7 @@ git commit -m "refactor: remove JSON paths from root.zig and CLI, simplify to XM
 
 ---
 
-### Task 13: Update remaining cache-flow tests
+### Task 12: Update remaining cache-flow tests
 
 **Files:**
 - Modify: `src/root.zig`
@@ -1043,7 +1115,7 @@ git commit -m "test: update cache-flow tests for XML-only architecture"
 
 ---
 
-### Task 14: Integration test — XML dir to markdown roundtrip
+### Task 13: Integration test — XML dir to markdown roundtrip
 
 **Files:**
 - Modify: `src/DocDatabase.zig` (or `src/root.zig`)
@@ -1085,6 +1157,13 @@ test "XML dir to markdown roundtrip" {
         \\    <members>
         \\        <member name="speed" type="float" default="1.0">Movement speed.</member>
         \\    </members>
+        \\    <operators>
+        \\        <operator name="operator *">
+        \\            <return type="TestClass" />
+        \\            <param index="0" name="right" type="float" />
+        \\            <description>Multiplies by a scalar.</description>
+        \\        </operator>
+        \\    </operators>
         \\    <constants>
         \\        <constant name="MAX_SPEED" value="100">Maximum speed.</constant>
         \\    </constants>
@@ -1123,8 +1202,10 @@ test "XML dir to markdown roundtrip" {
     try std.testing.expect(std.mem.indexOf(u8, written, "## Methods") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "## Properties") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "## Constants") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "## Operators") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "do_thing") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "speed") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "operator *") != null);
 }
 ```
 
@@ -1146,6 +1227,91 @@ git diff snapshots/
 ```bash
 git add src/ snapshots/
 git commit -m "test: add XML-to-markdown roundtrip integration test, update snapshots"
+```
+
+---
+
+### Task 14: Error-path replacement tests
+
+**Files:**
+- Modify: `src/DocDatabase.zig` or `src/root.zig`
+
+- [ ] **Step 1: Write test for XML parse failure**
+
+`loadFromXmlDir` should propagate zig-xml parse errors when encountering malformed XML. The specific error variant depends on what `zig-xml` returns — check the actual error set from `XmlDocParser.parseClassDoc` (likely `error.MalformedXml` or a zig-xml `SyntaxError`). Use `expectError` with the correct variant:
+
+```zig
+test "loadFromXmlDir returns error for malformed XML" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const tmp_path = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(tmp_path);
+
+    // Write a malformed XML file
+    try tmp_dir.dir.writeFile(.{ .sub_path = "Bad.xml", .data = "<?xml version=\"1.0\" ?>\n<class name=\"Bad\"><broken" });
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    // Expect a parse error — use the actual error variant from zig-xml/XmlDocParser
+    const result = DocDatabase.loadFromXmlDir(arena.allocator(), allocator, tmp_path);
+    try std.testing.expect(std.meta.isError(result));
+}
+```
+
+- [ ] **Step 2: Write test for symbol not found in XML-built database**
+
+```zig
+test "lookupSymbolExact returns SymbolNotFound for missing symbol in XML database" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const tmp_path = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(tmp_path);
+
+    // Write a valid XML file
+    try tmp_dir.dir.writeFile(.{ .sub_path = "Node.xml", .data =
+        \\<?xml version="1.0" encoding="UTF-8" ?>
+        \\<class name="Node" inherits="Object">
+        \\    <brief_description>Base class.</brief_description>
+        \\    <description>Base node class.</description>
+        \\</class>
+    });
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const db = try DocDatabase.loadFromXmlDir(arena.allocator(), allocator, tmp_path);
+    const result = db.lookupSymbolExact("NonExistent");
+    try std.testing.expectError(DocDatabase.Error.SymbolNotFound, result);
+}
+```
+
+- [ ] **Step 3: Write test for missing cache directory**
+
+```zig
+test "cacheIsPopulated returns false for nonexistent directory" {
+    const allocator = std.testing.allocator;
+    const result = try cache.cacheIsPopulated(allocator, "/tmp/gdoc-nonexistent-test-path");
+    try std.testing.expect(!result);
+}
+```
+
+- [ ] **Step 4: Run tests**
+
+Run: `zig build test 2>&1 | grep -E "PASS|FAIL"`
+Expected: All tests pass
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/DocDatabase.zig src/cache.zig
+git commit -m "test: add error-path tests for XML parse failure, missing symbols, missing cache"
 ```
 
 ---
