@@ -31,7 +31,7 @@ Entry {
     key                 // "Node2D" or "Node2D.position"
     name                // "Node2D" or "position"
     kind                // class, builtin_class, method, property, signal, constant,
-                        //   enum_value, constructor, operator, utility_function
+                        //   enum_value, constructor, operator, global_function
     inherits            // "CanvasItem" (classes only)
     description         // full BBCode description
     brief_description
@@ -43,7 +43,7 @@ Entry {
 }
 ```
 
-New fields on `Entry`: `inherits`, `qualifiers`, `default_value` (the existing struct has `key`, `name`, `kind`, `description`, `brief_description`, `signature`, `members`, `tutorials`).
+New fields on `Entry`: `inherits`, `qualifiers`, `default_value`, `tutorials` (the existing struct has `key`, `name`, `kind`, `description`, `brief_description`, `signature`, `members`, `parent_index`; the `Tutorial` type exists at the `DocDatabase` level but is not yet wired into `Entry`).
 
 New `EntryKind` value: `constructor` (added to existing set which already includes `operator`).
 
@@ -79,10 +79,10 @@ ClassDoc {
 
 MemberDoc {
     name, description                                           // existing
-    qualifiers                                                  // new
-    default_value                                               // new
-    return_type                                                 // new
-    params: []ParamDoc                                          // new
+    qualifiers                                                  // new (nullable; methods/constructors/operators)
+    default_value                                               // new (nullable; properties/constants)
+    return_type                                                 // new (nullable; not on constants)
+    params: ?[]ParamDoc                                         // new (nullable; not on constants)
 }
 
 ParamDoc {
@@ -100,7 +100,8 @@ ParamDoc {
 - **`api.generateApiJsonIfNotExists`** call in cache flow
 - **`getJsonCachePathInDir`** and JSON-specific cache helpers in `cache.zig`
 - **JSON cache file** (`extension_api.json`) from cache directory
-- **`--no-xml` / `GDOC_NO_XML`** — the `no_xml` field on `Config` becomes meaningless since XML is the sole source
+- **`--no-xml` / `GDOC_NO_XML`** — the `no_xml` field on `Config` becomes meaningless since XML is the sole source; `Config.testing` updated to remove this field
+- **`--godot-extension-api` flag definition in `cli/root.zig`** — flag declaration, reading, and threading through to `formatAndDisplay`
 - **Tests using JSON fixtures** — tests in `root.zig` that create inline JSON (e.g., `markdownForSymbol returns ApiFileNotFound`) are deleted, not rewritten; the JSON path no longer exists
 
 **Kept:**
@@ -108,6 +109,10 @@ ParamDoc {
 - **`source_fetch.zig`** — still fetches XML docs from GitHub tarballs
 - **`XmlDocParser.zig`** — expanded
 - **`cache.zig`** — adapted to build from XML instead of JSON
+
+### Function Signature Changes
+
+`markdownForSymbol`, `formatAndDisplay`, and `renderWithZigdown` all lose the `api_json_path: ?[]const u8` parameter. The JSON file path codepath (direct load from a user-provided file) is removed entirely. These functions always use the cache flow — there is no "bypass cache" mode.
 
 ### New Cache Flow
 
@@ -206,3 +211,4 @@ Key additions vs current output:
 - Unit tests for expanded XmlDocParser (constructors, operators, qualifiers, defaults, params)
 - Integration test: XML dir → DocDatabase → markdown output roundtrip
 - Tests using inline JSON fixtures are deleted (JSON path no longer exists); new tests use inline XML strings
+- Replacement error-path tests: XML parse failure (malformed XML), symbol not found in XML-built database, cache directory missing/unwritable
