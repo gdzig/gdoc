@@ -1,3 +1,21 @@
+## [0.1.1] - 2026-03-21
+
+### 🐛 Bug Fixes
+
+- Resolve markdown output failure on macOS when stdout is a pipe
+- Update zq command syntax for reading version from build.zig.zon
+
+### 💼 Other
+
+- Replace sed with zq for version parsing and updating in release task
+
+### 📚 Documentation
+
+- Clarify offline behavior and how docs are fetched in README
+
+### ⚙️ Miscellaneous Tasks
+
+- Remove beads issue tracking integration and drop bd tool from mise.toml
 ## [0.1.0] - 2026-03-21
 
 ### 🚀 Features
