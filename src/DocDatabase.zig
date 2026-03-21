@@ -1352,112 +1352,91 @@ test "lookupSymbolExact returns SymbolNotFound for missing symbol in XML databas
     try std.testing.expectError(DocDatabase.Error.SymbolNotFound, result);
 }
 
-// --- Godot BBCode conversion tests ---
+// --- Godot BBCode conversion snapshot tests ---
 
-test "bbcodeToMarkdown converts [member] to backtick-wrapped name" {
-    const allocator = std.testing.allocator;
-    const result = try bbcodeToMarkdown(allocator, "[member position]");
-    defer allocator.free(result);
-    try std.testing.expectEqualStrings("`position`", result);
+fn writeSnapshot(content: []const u8, path: []const u8) !void {
+    var file = try std.fs.cwd().createFile(path, .{});
+    defer file.close();
+
+    var buf: [4096]u8 = undefined;
+    var file_writer = file.writer(&buf);
+    try file_writer.interface.writeAll(content);
+    try file_writer.interface.flush();
 }
 
-test "bbcodeToMarkdown converts [method] to backtick-wrapped name with parens" {
+test "snapshot: cross-reference tags" {
     const allocator = std.testing.allocator;
-    const result = try bbcodeToMarkdown(allocator, "[method look_at]");
+    const result = try bbcodeToMarkdown(allocator,
+        \\See [member position] and [method look_at].
+        \\Uses [param delta] with [constant NAN].
+        \\Emits [signal finished] for [enum LoopMode].
+        \\Apply [annotation @export] to [theme_item color].
+    );
     defer allocator.free(result);
-    try std.testing.expectEqualStrings("`look_at()`", result);
+    try writeSnapshot(result, "snapshots/godot_cross_refs.md");
 }
 
-test "bbcodeToMarkdown converts [param] to italic" {
+test "snapshot: bare class references" {
     const allocator = std.testing.allocator;
-    const result = try bbcodeToMarkdown(allocator, "[param delta]");
+    const result = try bbcodeToMarkdown(allocator,
+        \\Both [Node2D] and [Control] inherit from [CanvasItem].
+        \\See also [@GDScript] and [Transform2D].
+    );
     defer allocator.free(result);
-    try std.testing.expectEqualStrings("*delta*", result);
+    try writeSnapshot(result, "snapshots/godot_bare_class_refs.md");
 }
 
-test "bbcodeToMarkdown converts [constant] to backtick-wrapped" {
+test "snapshot: mixed Godot tags with standard BBCode" {
     const allocator = std.testing.allocator;
-    const result = try bbcodeToMarkdown(allocator, "[constant NAN]");
+    const result = try bbcodeToMarkdown(allocator,
+        \\[b]Note:[/b] The [member position] is relative to the parent.
+        \\Use [code]get_node()[/code] or [method get_child] to access children.
+        \\See [i]also[/i] [url=https://docs.godotengine.org]the docs[/url].
+    );
     defer allocator.free(result);
-    try std.testing.expectEqualStrings("`NAN`", result);
+    try writeSnapshot(result, "snapshots/godot_mixed_with_bbcode.md");
 }
 
-test "bbcodeToMarkdown converts [signal] with dotted name" {
+test "snapshot: codeblock with indented content" {
     const allocator = std.testing.allocator;
-    const result = try bbcodeToMarkdown(allocator, "[signal Animation.finished]");
+    const result = try bbcodeToMarkdown(allocator,
+        \\Example usage:
+        \\[codeblock]
+        \\for i in range(10):
+        \\    var node = get_child(i)
+        \\    node.queue_free()
+        \\[/codeblock]
+        \\This frees all children.
+    );
     defer allocator.free(result);
-    try std.testing.expectEqualStrings("`Animation.finished`", result);
+    try writeSnapshot(result, "snapshots/godot_codeblock.md");
 }
 
-test "bbcodeToMarkdown converts [enum] to backtick-wrapped" {
+test "snapshot: codeblocks with gdscript and csharp" {
     const allocator = std.testing.allocator;
-    const result = try bbcodeToMarkdown(allocator, "[enum LoopMode]");
+    const result = try bbcodeToMarkdown(allocator,
+        \\Iterate through collisions:
+        \\[codeblocks]
+        \\[gdscript]
+        \\for i in get_slide_collision_count():
+        \\    var collision = get_slide_collision(i)
+        \\    print(collision.get_collider().name)
+        \\[/gdscript]
+        \\[csharp]
+        \\for (int i = 0; i < GetSlideCollisionCount(); i++)
+        \\{
+        \\    var collision = GetSlideCollision(i);
+        \\    GD.Print(collision.GetCollider().Name);
+        \\}
+        \\[/csharp]
+        \\[/codeblocks]
+        \\See [method move_and_slide].
+    );
     defer allocator.free(result);
-    try std.testing.expectEqualStrings("`LoopMode`", result);
+    try writeSnapshot(result, "snapshots/godot_codeblocks_multilang.md");
 }
 
-test "bbcodeToMarkdown converts [annotation] to backtick-wrapped" {
-    const allocator = std.testing.allocator;
-    const result = try bbcodeToMarkdown(allocator, "[annotation @export]");
-    defer allocator.free(result);
-    try std.testing.expectEqualStrings("`@export`", result);
-}
-
-test "bbcodeToMarkdown converts [theme_item] to backtick-wrapped" {
-    const allocator = std.testing.allocator;
-    const result = try bbcodeToMarkdown(allocator, "[theme_item color]");
-    defer allocator.free(result);
-    try std.testing.expectEqualStrings("`color`", result);
-}
-
-test "bbcodeToMarkdown converts bare class ref [Node2D] to backtick-wrapped" {
-    const allocator = std.testing.allocator;
-    const result = try bbcodeToMarkdown(allocator, "[Node2D]");
-    defer allocator.free(result);
-    try std.testing.expectEqualStrings("`Node2D`", result);
-}
-
-test "bbcodeToMarkdown converts [@GDScript] bare ref" {
-    const allocator = std.testing.allocator;
-    const result = try bbcodeToMarkdown(allocator, "[@GDScript]");
-    defer allocator.free(result);
-    try std.testing.expectEqualStrings("`@GDScript`", result);
-}
-
-test "bbcodeToMarkdown handles mixed Godot tags and standard BBCode" {
-    const allocator = std.testing.allocator;
-    const result = try bbcodeToMarkdown(allocator, "See [member x] and [b]bold[/b] text");
-    defer allocator.free(result);
-    try std.testing.expectEqualStrings("See `x` and **bold** text", result);
-}
-
-test "bbcodeToMarkdown preserves standard BBCode" {
-    const allocator = std.testing.allocator;
-    const result = try bbcodeToMarkdown(allocator, "[b]bold[/b] and [i]italic[/i]");
-    defer allocator.free(result);
-    try std.testing.expectEqualStrings("**bold** and *italic*", result);
-}
-
-test "bbcodeToMarkdown converts [codeblock] to fenced code" {
-    const allocator = std.testing.allocator;
-    const result = try bbcodeToMarkdown(allocator, "[codeblock]print(\"hi\")[/codeblock]");
-    defer allocator.free(result);
-    try std.testing.expectEqualStrings("\n```\nprint(\"hi\")\n```\n", result);
-}
-
-test "bbcodeToMarkdown converts [codeblocks] with gdscript and csharp" {
-    const allocator = std.testing.allocator;
-    const input = "[codeblocks][gdscript]print(\"hi\")[/gdscript][csharp]Console.Write(\"hi\")[/csharp][/codeblocks]";
-    const result = try bbcodeToMarkdown(allocator, input);
-    defer allocator.free(result);
-    // Should contain both language blocks
-    try std.testing.expect(std.mem.indexOf(u8, result, "```gdscript") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result, "print(\"hi\")") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result, "```csharp") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result, "Console.Write(\"hi\")") != null);
-}
-
-test "bbcodeToMarkdown converts Godot tags within loadFromXmlDir" {
+test "snapshot: XML roundtrip with Godot tags" {
     const allocator = std.testing.allocator;
 
     var tmp_dir = std.testing.tmpDir(.{});
@@ -1467,9 +1446,16 @@ test "bbcodeToMarkdown converts Godot tags within loadFromXmlDir" {
 
     const xml_content =
         \\<?xml version="1.0" encoding="UTF-8" ?>
-        \\<class name="TestGodotTags">
+        \\<class name="TestGodotTags" inherits="Node2D">
         \\    <brief_description>See [member position] and [method look_at].</brief_description>
-        \\    <description>Uses [param delta] with [Node2D] class.</description>
+        \\    <description>Uses [param delta] with [Node2D] class. See [constant NOTIFICATION_READY].</description>
+        \\    <methods>
+        \\        <method name="do_thing">
+        \\            <return type="void" />
+        \\            <param index="0" name="speed" type="float" />
+        \\            <description>Applies [param speed] using [method move_and_slide]. Returns [constant OK] on success.</description>
+        \\        </method>
+        \\    </methods>
         \\</class>
     ;
     try tmp_dir.dir.writeFile(.{ .sub_path = "TestGodotTags.xml", .data = xml_content });
@@ -1477,13 +1463,18 @@ test "bbcodeToMarkdown converts Godot tags within loadFromXmlDir" {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     const db = try DocDatabase.loadFromXmlDir(arena.allocator(), allocator, tmp_path);
-    const entry = db.symbols.get("TestGodotTags").?;
 
-    // Cross-refs should be converted
-    try std.testing.expect(std.mem.indexOf(u8, entry.brief_description.?, "`position`") != null);
-    try std.testing.expect(std.mem.indexOf(u8, entry.brief_description.?, "`look_at()`") != null);
-    try std.testing.expect(std.mem.indexOf(u8, entry.description.?, "*delta*") != null);
-    try std.testing.expect(std.mem.indexOf(u8, entry.description.?, "`Node2D`") != null);
+    // Write class index snapshot
+    var allocating: Writer.Allocating = .init(allocator);
+    defer allocating.deinit();
+    try db.generateMarkdownForSymbol(allocator, "TestGodotTags", &allocating.writer);
+    try writeSnapshot(allocating.written(), "snapshots/godot_xml_roundtrip_class.md");
+
+    // Write method snapshot
+    var allocating2: Writer.Allocating = .init(allocator);
+    defer allocating2.deinit();
+    try db.generateMarkdownForSymbol(allocator, "TestGodotTags.do_thing", &allocating2.writer);
+    try writeSnapshot(allocating2.written(), "snapshots/godot_xml_roundtrip_method.md");
 }
 
 const std = @import("std");
