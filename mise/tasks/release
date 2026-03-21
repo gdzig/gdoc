@@ -21,7 +21,7 @@ if ! git diff --quiet || ! git diff --cached --quiet; then
 fi
 
 # Read current version from build.zig.zon
-current=$(sed -n 's/.*\.version = "\([^"]*\)".*/\1/p' build.zig.zon)
+current=$(zq -q .version -r < build.zig.zon)
 if [[ -z "$current" ]]; then
     echo "Error: could not read version from build.zig.zon"
     exit 1
@@ -67,7 +67,7 @@ if [[ "${usage_noconfirm:-false}" != "true" ]]; then
 fi
 
 # Update version in build.zig.zon
-sed -i "s/\.version = \"$current\"/.version = \"$new\"/" build.zig.zon
+zq --io build.zig.zon -q .version -s "$new"
 
 # Generate changelog
 git-cliff --tag "$tag" -o CHANGELOG.md

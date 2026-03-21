@@ -4,6 +4,7 @@ zls = "0.15.0"
 godot = "latest"
 git-cliff = "latest"
 usage = "latest"
+"forgejo:tensorush/zq" = { version = "0.8.0", bin = "zq" }
 
 [tasks.test]
 alias = ["t"]
