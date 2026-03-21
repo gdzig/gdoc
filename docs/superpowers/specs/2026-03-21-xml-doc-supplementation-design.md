@@ -22,7 +22,7 @@ Automatically fetch and parse Godot's XML documentation from the source tree, us
 6. Write a `.complete` marker file with the version string after successful extraction.
 7. The tarball is never written to disk -- streamed directly from HTTP through decompression and extraction.
 
-**When Godot is not installed**: The existing fallback path downloads JSON from GitHub. In this case, use the latest stable release tag from the GitHub API to determine the tarball URL for XML docs.
+**Godot must be installed** for XML supplementation. If `godot --version` fails, XML docs are skipped silently.
 
 This runs automatically on first use alongside the existing JSON generation. `--clear-cache` clears XML docs too.
 

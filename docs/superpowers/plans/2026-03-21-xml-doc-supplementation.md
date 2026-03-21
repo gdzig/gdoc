@@ -896,12 +896,7 @@ fn fetchXmlDocs(allocator: Allocator, cache_path: []const u8) void {
 
     cache.ensureDirectoryExists(xml_dir) catch return;
 
-    const version = source_fetch.getGodotVersion(allocator) orelse {
-        // TODO: When Godot is not installed, query GitHub API for latest release tag
-        // For now, skip XML supplementation without Godot
-        std.log.warn("godot not found, skipping XML doc supplementation", .{});
-        return;
-    };
+    const version = source_fetch.getGodotVersion(allocator) orelse return;
 
     var url_buf: [256]u8 = undefined;
     const url = source_fetch.buildTarballUrl(&url_buf, version) orelse return;
