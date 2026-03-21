@@ -43,12 +43,193 @@ pub const Entry = struct {
 fn bbcodeToMarkdown(allocator: Allocator, input: []const u8) ![]const u8 {
     var output: std.Io.Writer.Allocating = .init(allocator);
 
-    const bbcode_doc = try bbcodez.loadFromBuffer(allocator, input, .{});
+    const bbcode_doc = try bbcodez.loadFromBuffer(allocator, input, .{
+        .verbatim_tags = &.{ "code", "codeblock", "codeblocks" },
+        .tokenizer_options = .{ .equals_required_in_parameters = false },
+        .parser_options = .{ .is_self_closing_fn = &isGodotSelfClosing },
+    });
     defer bbcode_doc.deinit();
 
-    try bbcodez.fmt.md.renderDocument(allocator, bbcode_doc, &output.writer, .{});
+    try bbcodez.fmt.md.renderDocument(allocator, bbcode_doc, &output.writer, .{
+        .write_element_fn = &writeGodotElement,
+    });
 
     return try output.toOwnedSlice();
+}
+
+/// Known Godot cross-reference tag names (self-closing, space-separated value).
+const godot_cross_ref_tags = [_][]const u8{
+    "member",
+    "method",
+    "param",
+    "constant",
+    "signal",
+    "enum",
+    "annotation",
+    "theme_item",
+};
+
+fn isGodotCrossRefTag(name: []const u8) bool {
+    for (&godot_cross_ref_tags) |tag| {
+        if (std.mem.eql(u8, name, tag)) return true;
+    }
+    return false;
+}
+
+/// Returns true if a tag is a bare Godot class reference like [Node2D] or [@GDScript].
+fn isBareClassRef(name: []const u8) bool {
+    if (name.len < 2) return false;
+    if (std.ascii.isUpper(name[0])) return true;
+    if (name[0] == '@' and name.len > 1 and std.ascii.isUpper(name[1])) return true;
+    return false;
+}
+
+/// Parser callback: marks Godot cross-ref tags and bare class refs as self-closing.
+fn isGodotSelfClosing(_: ?*anyopaque, token: bbcodez.tokenizer.TokenResult.Token) bool {
+    return isGodotCrossRefTag(token.name) or isBareClassRef(token.name);
+}
+
+/// Renderer callback: converts Godot-specific elements to markdown.
+fn writeGodotElement(node: bbcodez.Node, ctx_ptr: ?*const anyopaque) anyerror!bool {
+    if (node.type != .element) return false;
+
+    const ctx: *const bbcodez.fmt.md.WriteContext = @ptrCast(@alignCast(ctx_ptr));
+    const name = try node.getName();
+
+    // Cross-reference tags: [member X], [method X], [param X], etc.
+    if (isGodotCrossRefTag(name)) {
+        const value = (try node.getValue()) orelse return false;
+        if (std.mem.eql(u8, name, "method")) {
+            try ctx.writer.print("`{s}()`", .{value});
+        } else if (std.mem.eql(u8, name, "param")) {
+            try ctx.writer.print("*{s}*", .{value});
+        } else {
+            try ctx.writer.print("`{s}`", .{value});
+        }
+        return true;
+    }
+
+    // Code blocks: [codeblock]...[/codeblock]
+    if (std.mem.eql(u8, name, "codeblock")) {
+        const content = getVerbatimContent(node);
+        try writeFencedCode(ctx.writer, content, null);
+        return true;
+    }
+
+    // Multi-language code blocks: [codeblocks][gdscript]...[/gdscript][csharp]...[/csharp][/codeblocks]
+    if (std.mem.eql(u8, name, "codeblocks")) {
+        const content = getVerbatimContent(node);
+        try writeCodeblocks(ctx.writer, content);
+        return true;
+    }
+
+    // Bare class references: [Node2D], [Transform2D], [@GDScript]
+    if (node.type == .element and isBareClassRef(name)) {
+        try ctx.writer.print("`{s}`", .{name});
+        return true;
+    }
+
+    return false;
+}
+
+/// Extracts the text content from a verbatim element's children.
+fn getVerbatimContent(node: bbcodez.Node) []const u8 {
+    if (node.type != .element) return "";
+    for (node.children.items) |child| {
+        if (child.type == .text) {
+            return child.value.text;
+        }
+    }
+    return "";
+}
+
+/// Extracts language blocks from [codeblocks] verbatim content and writes fenced code.
+fn writeCodeblocks(writer: *std.Io.Writer, content: []const u8) !void {
+    const lang_tags = [_][]const u8{ "gdscript", "csharp" };
+    var wrote_any = false;
+
+    for (&lang_tags) |lang| {
+        if (findTagContent(content, lang)) |span| {
+            const trimmed = std.mem.trim(u8, span, " \t\n\r");
+            if (trimmed.len > 0) {
+                if (wrote_any) try writer.writeAll("\n");
+                try writeFencedCode(writer, span, lang);
+                wrote_any = true;
+            }
+        }
+    }
+
+    if (!wrote_any) {
+        // Fallback: emit raw content as plain code block
+        try writeFencedCode(writer, content, null);
+    }
+}
+
+/// Finds content between [tag]...[/tag] in a string.
+fn findTagContent(content: []const u8, tag: []const u8) ?[]const u8 {
+    // Build "[tag]" pattern
+    var open_buf: [64]u8 = undefined;
+    const open_tag = std.fmt.bufPrint(&open_buf, "[{s}]", .{tag}) catch return null;
+
+    // Build "[/tag]" pattern
+    var close_buf: [64]u8 = undefined;
+    const close_tag = std.fmt.bufPrint(&close_buf, "[/{s}]", .{tag}) catch return null;
+
+    const open_pos = std.mem.indexOf(u8, content, open_tag) orelse return null;
+    const content_start = open_pos + open_tag.len;
+    const close_pos = std.mem.indexOfPos(u8, content, content_start, close_tag) orelse return null;
+
+    return content[content_start..close_pos];
+}
+
+/// Writes content as a fenced code block, stripping common leading indentation.
+fn writeFencedCode(writer: *std.Io.Writer, raw: []const u8, lang: ?[]const u8) !void {
+    // Strip only leading/trailing newlines, preserving indentation structure
+    const trimmed = std.mem.trim(u8, raw, "\n\r");
+    if (std.mem.trim(u8, trimmed, " \t").len == 0) return;
+
+    // Find minimum indentation across non-empty lines
+    var min_indent: usize = std.math.maxInt(usize);
+    var line_iter = std.mem.splitScalar(u8, trimmed, '\n');
+    while (line_iter.next()) |line| {
+        const stripped = std.mem.trimLeft(u8, line, " \t");
+        if (stripped.len == 0) continue;
+        min_indent = @min(min_indent, line.len - stripped.len);
+    }
+    if (min_indent == std.math.maxInt(usize)) min_indent = 0;
+
+    // Write fenced block with dedented lines
+    if (lang) |l| {
+        try writer.print("\n```{s}\n", .{l});
+    } else {
+        try writer.writeAll("\n```\n");
+    }
+
+    // Count non-trailing-blank lines
+    var line_count: usize = 0;
+    var count_iter = std.mem.splitScalar(u8, trimmed, '\n');
+    while (count_iter.next()) |_| line_count += 1;
+    // Find last non-blank line
+    var last_content_line: usize = 0;
+    var idx: usize = 0;
+    var scan_iter = std.mem.splitScalar(u8, trimmed, '\n');
+    while (scan_iter.next()) |line| : (idx += 1) {
+        if (std.mem.trimLeft(u8, line, " \t").len > 0) last_content_line = idx;
+    }
+
+    line_iter = std.mem.splitScalar(u8, trimmed, '\n');
+    var line_idx: usize = 0;
+    var first = true;
+    while (line_iter.next()) |line| : (line_idx += 1) {
+        if (line_idx > last_content_line) break;
+        if (!first) try writer.writeAll("\n");
+        first = false;
+        if (line.len > min_indent) {
+            try writer.writeAll(line[min_indent..]);
+        }
+    }
+
+    try writer.writeAll("\n```\n");
 }
 
 pub fn lookupSymbolExact(self: DocDatabase, symbol: []const u8) DocDatabase.Error!Entry {
@@ -1169,6 +1350,140 @@ test "lookupSymbolExact returns SymbolNotFound for missing symbol in XML databas
     const db = try DocDatabase.loadFromXmlDir(arena.allocator(), allocator, tmp_path);
     const result = db.lookupSymbolExact("NonExistent");
     try std.testing.expectError(DocDatabase.Error.SymbolNotFound, result);
+}
+
+// --- Godot BBCode conversion tests ---
+
+test "bbcodeToMarkdown converts [member] to backtick-wrapped name" {
+    const allocator = std.testing.allocator;
+    const result = try bbcodeToMarkdown(allocator, "[member position]");
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("`position`", result);
+}
+
+test "bbcodeToMarkdown converts [method] to backtick-wrapped name with parens" {
+    const allocator = std.testing.allocator;
+    const result = try bbcodeToMarkdown(allocator, "[method look_at]");
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("`look_at()`", result);
+}
+
+test "bbcodeToMarkdown converts [param] to italic" {
+    const allocator = std.testing.allocator;
+    const result = try bbcodeToMarkdown(allocator, "[param delta]");
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("*delta*", result);
+}
+
+test "bbcodeToMarkdown converts [constant] to backtick-wrapped" {
+    const allocator = std.testing.allocator;
+    const result = try bbcodeToMarkdown(allocator, "[constant NAN]");
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("`NAN`", result);
+}
+
+test "bbcodeToMarkdown converts [signal] with dotted name" {
+    const allocator = std.testing.allocator;
+    const result = try bbcodeToMarkdown(allocator, "[signal Animation.finished]");
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("`Animation.finished`", result);
+}
+
+test "bbcodeToMarkdown converts [enum] to backtick-wrapped" {
+    const allocator = std.testing.allocator;
+    const result = try bbcodeToMarkdown(allocator, "[enum LoopMode]");
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("`LoopMode`", result);
+}
+
+test "bbcodeToMarkdown converts [annotation] to backtick-wrapped" {
+    const allocator = std.testing.allocator;
+    const result = try bbcodeToMarkdown(allocator, "[annotation @export]");
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("`@export`", result);
+}
+
+test "bbcodeToMarkdown converts [theme_item] to backtick-wrapped" {
+    const allocator = std.testing.allocator;
+    const result = try bbcodeToMarkdown(allocator, "[theme_item color]");
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("`color`", result);
+}
+
+test "bbcodeToMarkdown converts bare class ref [Node2D] to backtick-wrapped" {
+    const allocator = std.testing.allocator;
+    const result = try bbcodeToMarkdown(allocator, "[Node2D]");
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("`Node2D`", result);
+}
+
+test "bbcodeToMarkdown converts [@GDScript] bare ref" {
+    const allocator = std.testing.allocator;
+    const result = try bbcodeToMarkdown(allocator, "[@GDScript]");
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("`@GDScript`", result);
+}
+
+test "bbcodeToMarkdown handles mixed Godot tags and standard BBCode" {
+    const allocator = std.testing.allocator;
+    const result = try bbcodeToMarkdown(allocator, "See [member x] and [b]bold[/b] text");
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("See `x` and **bold** text", result);
+}
+
+test "bbcodeToMarkdown preserves standard BBCode" {
+    const allocator = std.testing.allocator;
+    const result = try bbcodeToMarkdown(allocator, "[b]bold[/b] and [i]italic[/i]");
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("**bold** and *italic*", result);
+}
+
+test "bbcodeToMarkdown converts [codeblock] to fenced code" {
+    const allocator = std.testing.allocator;
+    const result = try bbcodeToMarkdown(allocator, "[codeblock]print(\"hi\")[/codeblock]");
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("\n```\nprint(\"hi\")\n```\n", result);
+}
+
+test "bbcodeToMarkdown converts [codeblocks] with gdscript and csharp" {
+    const allocator = std.testing.allocator;
+    const input = "[codeblocks][gdscript]print(\"hi\")[/gdscript][csharp]Console.Write(\"hi\")[/csharp][/codeblocks]";
+    const result = try bbcodeToMarkdown(allocator, input);
+    defer allocator.free(result);
+    // Should contain both language blocks
+    try std.testing.expect(std.mem.indexOf(u8, result, "```gdscript") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "print(\"hi\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "```csharp") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "Console.Write(\"hi\")") != null);
+}
+
+test "bbcodeToMarkdown converts Godot tags within loadFromXmlDir" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const tmp_path = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(tmp_path);
+
+    const xml_content =
+        \\<?xml version="1.0" encoding="UTF-8" ?>
+        \\<class name="TestGodotTags">
+        \\    <brief_description>See [member position] and [method look_at].</brief_description>
+        \\    <description>Uses [param delta] with [Node2D] class.</description>
+        \\</class>
+    ;
+    try tmp_dir.dir.writeFile(.{ .sub_path = "TestGodotTags.xml", .data = xml_content });
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const db = try DocDatabase.loadFromXmlDir(arena.allocator(), allocator, tmp_path);
+    const entry = db.symbols.get("TestGodotTags").?;
+
+    // Cross-refs should be converted
+    try std.testing.expect(std.mem.indexOf(u8, entry.brief_description.?, "`position`") != null);
+    try std.testing.expect(std.mem.indexOf(u8, entry.brief_description.?, "`look_at()`") != null);
+    try std.testing.expect(std.mem.indexOf(u8, entry.description.?, "*delta*") != null);
+    try std.testing.expect(std.mem.indexOf(u8, entry.description.?, "`Node2D`") != null);
 }
 
 const std = @import("std");
