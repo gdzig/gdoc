@@ -30,7 +30,7 @@ The `DocDatabase.Entry` struct expands to hold everything XML provides:
 Entry {
     key                 // "Node2D" or "Node2D.position"
     name                // "Node2D" or "position"
-    kind                // class, builtin_class, method, property, signal, constant,
+    kind                // class, method, property, signal, constant,
                         //   enum_value, constructor, operator, global_function
     inherits            // "CanvasItem" (classes only)
     description         // full BBCode description
@@ -49,7 +49,7 @@ New `EntryKind` value: `constructor` (added to existing set which already includ
 
 The `DocDatabase` remains a flat symbol table keyed by dotted paths (`"Vector2.abs"`, `"@GlobalScope.sin"`). Utility functions from `@GlobalScope.xml` and `@GDScript.xml` are registered both under their qualified name and as top-level entries for convenience (e.g., both `"@GlobalScope.abs"` and `"abs"`). If both files define the same function name, `@GlobalScope` wins (it is the canonical source; `@GDScript` contains GDScript-specific helpers like `preload`).
 
-**Builtin class detection:** XML docs don't distinguish builtin classes from regular classes. Builtins are identified by a hardcoded list matching the Variant types (Vector2, Vector3, Color, AABB, Basis, Transform2D, Transform3D, Projection, Quaternion, Plane, Rect2, Rect2i, Vector2i, Vector3i, Vector4, Vector4i, RID, Callable, Signal, Dictionary, Array, NodePath, StringName, String, PackedByteArray, PackedInt32Array, PackedInt64Array, PackedFloat32Array, PackedFloat64Array, PackedStringArray, PackedVector2Array, PackedVector3Array, PackedColorArray, PackedVector4Array, int, float, bool, Nil). This list is stable across Godot versions.
+**No builtin class distinction:** The `builtin_class` EntryKind is removed. All XML `<class>` elements become `EntryKind.class`. Builtins (Vector2, int, etc.) and regular classes (Node, Sprite2D, etc.) render identically — constructors and operators are their own entry kinds and render regardless of parent class type.
 
 **Enum extraction from XML:** XML stores enums within `<constants>` elements using an `enum` attribute (e.g., `<constant name="PROCESS_MODE_INHERIT" value="0" enum="ProcessMode">`). Constants with the same `enum` attribute are grouped into enum entries with kind `enum_value`, keyed as `"ClassName.EnumName.VALUE_NAME"`.
 
@@ -140,7 +140,7 @@ New entry point replacing `loadFromJsonFileLeaky`. Behavior:
 
 1. Open `xml_dir` and iterate all `.xml` files
 2. For each file, call `XmlDocParser.parseClassDoc` (using an arena allocator so all strings outlive the function)
-3. Create a class-level `Entry` with kind determined by the builtin list (see Data Model above)
+3. Create a class-level `Entry` with kind `class` (all XML `<class>` elements are treated uniformly)
 4. For each member category (methods, properties, signals, constants, constructors, operators), create child entries keyed as `"ClassName.member_name"`
 5. Build `signature` strings from parsed params and return types:
    - Methods: `(param: Type, param2: Type = default) -> ReturnType`
