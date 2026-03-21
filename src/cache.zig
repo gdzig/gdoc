@@ -9,7 +9,7 @@ pub fn clearCache(config: *const Config) !void {
 pub fn ensureDirectoryExists(dir_path: []const u8) !void {
     var dir = std.fs.openDirAbsolute(dir_path, .{}) catch |err| switch (err) {
         error.FileNotFound => {
-            try std.fs.makeDirAbsolute(dir_path);
+            try std.fs.cwd().makePath(dir_path);
             return;
         },
         else => return err,
