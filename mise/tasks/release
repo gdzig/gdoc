@@ -1,0 +1,93 @@
+#!/usr/bin/env -S usage bash
+#MISE description="Bump version, commit, and tag a release"
+#USAGE arg "<bump>" help="Version bump type" {
+#USAGE   choices "major" "minor" "patch"
+#USAGE }
+#USAGE flag "-p --push" help="Push commit and tag to remote after release"
+#USAGE flag "-y --noconfirm" help="Skip confirmation prompt"
+set -euo pipefail
+
+# Branch guard
+branch=$(git branch --show-current)
+if [[ "$branch" != "main" ]]; then
+    echo "Error: must be on main branch (currently on '$branch')"
+    exit 1
+fi
+
+# Dirty-tree guard
+if ! git diff --quiet || ! git diff --cached --quiet; then
+    echo "Error: working tree has uncommitted changes"
+    exit 1
+fi
+
+# Read current version from build.zig.zon
+current=$(sed -n 's/.*\.version = "\([^"]*\)".*/\1/p' build.zig.zon)
+if [[ -z "$current" ]]; then
+    echo "Error: could not read version from build.zig.zon"
+    exit 1
+fi
+echo "Current version: $current"
+
+# Parse semver
+IFS='.' read -r major minor patch <<< "$current"
+
+# Bump
+case "$usage_bump" in
+    major)
+        major=$((major + 1))
+        minor=0
+        patch=0
+        ;;
+    minor)
+        minor=$((minor + 1))
+        patch=0
+        ;;
+    patch)
+        patch=$((patch + 1))
+        ;;
+esac
+
+new="${major}.${minor}.${patch}"
+tag="v${new}"
+echo "Bumping $usage_bump: $current -> $new"
+
+# Check if tag already exists
+if git rev-parse "$tag" >/dev/null 2>&1; then
+    echo "Error: tag $tag already exists"
+    exit 1
+fi
+
+# Confirmation prompt
+if [[ "${usage_noconfirm:-false}" != "true" ]]; then
+    read -rp "Proceed? [y/N] " confirm
+    if [[ "$confirm" != [yY] ]]; then
+        echo "Aborted."
+        exit 0
+    fi
+fi
+
+# Update version in build.zig.zon
+sed -i "s/\.version = \"$current\"/.version = \"$new\"/" build.zig.zon
+
+# Generate changelog
+git-cliff --tag "$tag" -o CHANGELOG.md
+
+# Commit and tag
+git add build.zig.zon CHANGELOG.md
+git commit -m "chore(release): $tag"
+git tag "$tag"
+
+echo ""
+echo "Release $tag prepared successfully!"
+
+# Push or print instructions
+if [[ "${usage_push:-false}" == "true" ]]; then
+    git push origin main
+    git push origin "$tag"
+    echo "Pushed commit and tag to remote"
+else
+    echo ""
+    echo "To push manually:"
+    echo "  git push origin main"
+    echo "  git push origin $tag"
+fi
