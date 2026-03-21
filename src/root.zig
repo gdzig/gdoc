@@ -40,14 +40,12 @@ pub fn markdownForSymbol(allocator: Allocator, symbol: []const u8, api_json_path
         if (needs_full_rebuild) {
             try cache.ensureDirectoryExists(cache_path);
             try api.generateApiJsonIfNotExists(allocator, "godot", cache_path);
-        }
 
-        // Fetch XML docs if missing (best-effort)
-        if (needs_full_rebuild or !try cache.xmlDocsArePopulated(allocator, cache_path)) {
-            fetchXmlDocs(allocator, cache_path);
-        }
+            // Fetch XML docs if missing (best-effort, requires godot)
+            if (!try cache.xmlDocsArePopulated(allocator, cache_path)) {
+                fetchXmlDocs(allocator, cache_path);
+            }
 
-        if (needs_full_rebuild) {
             const json_path = try cache.getJsonCachePathInDir(allocator, cache_path);
             defer allocator.free(json_path);
 
@@ -414,7 +412,13 @@ test "markdownForSymbol generates markdown cache when cache is empty" {
     cache.clearCache(allocator) catch {};
 }
 
+fn xmlSupplementationDisabled() bool {
+    return std.posix.getenv("GDOC_NO_XML") != null;
+}
+
 fn fetchXmlDocs(allocator: Allocator, cache_path: []const u8) void {
+    if (xmlSupplementationDisabled()) return;
+
     const xml_dir = cache.getXmlDocsDirInCache(allocator, cache_path) catch return;
     defer allocator.free(xml_dir);
 
@@ -448,6 +452,8 @@ fn fetchXmlDocs(allocator: Allocator, cache_path: []const u8) void {
 }
 
 fn mergeXmlDocs(arena_allocator: Allocator, tmp_allocator: Allocator, db: *DocDatabase, cache_path: []const u8) void {
+    if (xmlSupplementationDisabled()) return;
+
     const xml_dir = cache.getXmlDocsDirInCache(tmp_allocator, cache_path) catch return;
     defer tmp_allocator.free(xml_dir);
 
