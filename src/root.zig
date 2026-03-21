@@ -416,7 +416,9 @@ test "markdownForSymbol generates markdown cache when cache is empty" {
 }
 
 fn xmlSupplementationDisabled() bool {
-    return std.posix.getenv("GDOC_NO_XML") != null;
+    var buf: [256]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&buf);
+    return std.process.hasEnvVar(fba.allocator(), "GDOC_NO_XML") catch false;
 }
 
 fn fetchXmlDocs(allocator: Allocator, cache_path: []const u8) void {
