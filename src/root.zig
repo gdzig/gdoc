@@ -46,6 +46,10 @@ pub fn markdownForSymbol(allocator: Allocator, symbol: []const u8, api_json_path
                 fetchXmlDocs(allocator, cache_path);
             }
 
+            var spinner: Spinner = .{ .message = "Building documentation cache..." };
+            if (!xmlSupplementationDisabled()) spinner.start();
+            defer spinner.finish();
+
             const json_path = try cache.getJsonCachePathInDir(allocator, cache_path);
             defer allocator.free(json_path);
 
@@ -54,7 +58,6 @@ pub fn markdownForSymbol(allocator: Allocator, symbol: []const u8, api_json_path
 
             var db = try DocDatabase.loadFromJsonFileLeaky(arena.allocator(), json_file);
 
-            // Merge XML data into db before generating markdown cache
             mergeXmlDocs(arena.allocator(), allocator, &db, cache_path);
 
             try cache.generateMarkdownCache(allocator, db, cache_path);

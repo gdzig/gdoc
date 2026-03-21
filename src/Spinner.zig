@@ -15,11 +15,12 @@ pub fn start(self: *Spinner) void {
 }
 
 pub fn finish(self: *Spinner) void {
+    if (self.thread == null) return;
+
     self.stop.store(true, .release);
-    if (self.thread) |t| {
-        t.join();
-        self.thread = null;
-    }
+    self.thread.?.join();
+    self.thread = null;
+
     const stderr = std.fs.File.stderr();
     var buf: [256]u8 = undefined;
     var w = stderr.writer(&buf);
