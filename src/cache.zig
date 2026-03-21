@@ -17,14 +17,6 @@ pub fn ensureDirectoryExists(dir_path: []const u8) !void {
     defer dir.close();
 }
 
-pub fn getJsonCachePathInDir(allocator: Allocator, cache_dir: []const u8) ![]const u8 {
-    return std.fmt.allocPrint(
-        allocator,
-        "{f}",
-        .{std.fs.path.fmtJoin(&[_][]const u8{ cache_dir, "extension_api.json" })},
-    );
-}
-
 pub fn resolveSymbolPath(allocator: Allocator, cache_path: []const u8, symbol: []const u8) ![]const u8 {
     // dot notation
     if (std.mem.indexOf(u8, symbol, ".")) |dot_pos| {
@@ -105,23 +97,25 @@ pub fn generateMarkdownCache(allocator: Allocator, db: DocDatabase, cache_path: 
 }
 
 pub fn cacheIsPopulated(allocator: Allocator, cache_path: []const u8) !bool {
-    const json_file_path = try getJsonCachePathInDir(allocator, cache_path);
-    defer allocator.free(json_file_path);
+    // Check xml_docs/.complete marker
+    const xml_dir = try getXmlDocsDirInCache(allocator, cache_path);
+    defer allocator.free(xml_dir);
 
-    const json_file = std.fs.openFileAbsolute(json_file_path, .{}) catch |err| switch (err) {
+    if (source_fetch.readCompleteMarker(allocator, xml_dir)) |m| {
+        allocator.free(m);
+    } else {
+        return false;
+    }
+
+    // Check Object/index.md sentinel
+    const object_path = try resolveSymbolPath(allocator, cache_path, "Object");
+    defer allocator.free(object_path);
+
+    const object_file = std.fs.openFileAbsolute(object_path, .{}) catch |err| switch (err) {
         error.FileNotFound => return false,
         else => return err,
     };
-    defer json_file.close();
-
-    const node_path = try resolveSymbolPath(allocator, cache_path, "Node");
-    defer allocator.free(node_path);
-
-    const node_file = std.fs.openFileAbsolute(node_path, .{}) catch |err| switch (err) {
-        error.FileNotFound => return false,
-        else => return err,
-    };
-    defer node_file.close();
+    object_file.close();
 
     return true;
 }
@@ -132,18 +126,6 @@ pub fn getXmlDocsDirInCache(allocator: Allocator, cache_dir: []const u8) ![]cons
         "{f}",
         .{std.fs.path.fmtJoin(&[_][]const u8{ cache_dir, "xml_docs" })},
     );
-}
-
-pub fn xmlDocsArePopulated(allocator: Allocator, cache_dir: []const u8) !bool {
-    const xml_dir = try getXmlDocsDirInCache(allocator, cache_dir);
-    defer allocator.free(xml_dir);
-
-    const marker = source_fetch.readCompleteMarker(allocator, xml_dir);
-    if (marker) |m| {
-        allocator.free(m);
-        return true;
-    }
-    return false;
 }
 
 test "testing config has valid cache directory" {
@@ -208,12 +190,12 @@ test "clearCache deletes cache directory" {
     // Ensure cache directory exists
     try ensureDirectoryExists(cache_dir);
 
-    // Create JSON file and markdown files
-    const json_path = try getJsonCachePathInDir(allocator, cache_dir);
-    defer allocator.free(json_path);
+    // Create a dummy file
+    const dummy_path = try std.fmt.allocPrint(allocator, "{s}/dummy.txt", .{cache_dir});
+    defer allocator.free(dummy_path);
 
-    var json_file = try std.fs.createFileAbsolute(json_path, .{});
-    json_file.close();
+    var dummy_file = try std.fs.createFileAbsolute(dummy_path, .{});
+    dummy_file.close();
 
     const node_dir = try std.fmt.allocPrint(allocator, "{s}/Node", .{cache_dir});
     defer allocator.free(node_dir);
@@ -224,7 +206,7 @@ test "clearCache deletes cache directory" {
     try std.fs.cwd().writeFile(.{ .sub_path = index_path, .data = "# Node\n" });
 
     // Verify files exist
-    _ = try std.fs.openFileAbsolute(json_path, .{});
+    _ = try std.fs.openFileAbsolute(dummy_path, .{});
     _ = try std.fs.openFileAbsolute(index_path, .{});
 
     // Clear cache
@@ -671,7 +653,7 @@ test "cacheIsPopulated returns false for nonexistent directory" {
     try std.testing.expect(!result);
 }
 
-test "cacheIsPopulated returns true when cache has markdown files" {
+test "cacheIsPopulated returns true when cache has xml marker and Object sentinel" {
     const allocator = std.testing.allocator;
 
     var tmp_dir = std.testing.tmpDir(.{});
@@ -680,26 +662,27 @@ test "cacheIsPopulated returns true when cache has markdown files" {
     const cache_dir = try tmp_dir.dir.realpathAlloc(allocator, ".");
     defer allocator.free(cache_dir);
 
-    // Create the JSON file (required by implementation)
-    const json_path = try getJsonCachePathInDir(allocator, cache_dir);
-    defer allocator.free(json_path);
-    try std.fs.cwd().writeFile(.{ .sub_path = json_path, .data = "{}" });
+    // Create xml_docs/.complete marker
+    const xml_dir = try getXmlDocsDirInCache(allocator, cache_dir);
+    defer allocator.free(xml_dir);
+    try std.fs.makeDirAbsolute(xml_dir);
+    source_fetch.writeCompleteMarker(allocator, xml_dir, "4.3.stable") catch unreachable;
 
-    // Create Node symbol directory with markdown file
-    const node_dir = try std.fmt.allocPrint(allocator, "{s}/Node", .{cache_dir});
-    defer allocator.free(node_dir);
-    try std.fs.makeDirAbsolute(node_dir);
+    // Create Object symbol directory with markdown file
+    const object_dir = try std.fmt.allocPrint(allocator, "{s}/Object", .{cache_dir});
+    defer allocator.free(object_dir);
+    try std.fs.makeDirAbsolute(object_dir);
 
-    const index_path = try std.fmt.allocPrint(allocator, "{s}/index.md", .{node_dir});
+    const index_path = try std.fmt.allocPrint(allocator, "{s}/index.md", .{object_dir});
     defer allocator.free(index_path);
-    try std.fs.cwd().writeFile(.{ .sub_path = index_path, .data = "# Node\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = index_path, .data = "# Object\n" });
 
-    // Should return true since cache has both JSON and markdown files
+    // Should return true since cache has both xml marker and Object sentinel
     const result = try cacheIsPopulated(allocator, cache_dir);
     try std.testing.expect(result);
 }
 
-test "cacheIsPopulated returns false when only extension_api.json exists" {
+test "cacheIsPopulated returns false when only xml marker exists" {
     const allocator = std.testing.allocator;
 
     var tmp_dir = std.testing.tmpDir(.{});
@@ -708,12 +691,13 @@ test "cacheIsPopulated returns false when only extension_api.json exists" {
     const cache_dir = try tmp_dir.dir.realpathAlloc(allocator, ".");
     defer allocator.free(cache_dir);
 
-    // Create only the JSON file, no markdown files
-    const json_path = try std.fmt.allocPrint(allocator, "{s}/extension_api.json", .{cache_dir});
-    defer allocator.free(json_path);
-    try std.fs.cwd().writeFile(.{ .sub_path = json_path, .data = "{}" });
+    // Create xml_docs/.complete marker but no Object sentinel
+    const xml_dir = try getXmlDocsDirInCache(allocator, cache_dir);
+    defer allocator.free(xml_dir);
+    try std.fs.makeDirAbsolute(xml_dir);
+    source_fetch.writeCompleteMarker(allocator, xml_dir, "4.3.stable") catch unreachable;
 
-    // Should return false - JSON alone doesn't mean cache is populated
+    // Should return false - xml marker alone doesn't mean cache is populated
     const result = try cacheIsPopulated(allocator, cache_dir);
     try std.testing.expect(!result);
 }

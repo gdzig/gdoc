@@ -19,13 +19,6 @@ pub fn build(allocator: Allocator, writer: *Writer, reader: *Reader) !*Command {
     });
 
     try root.addFlag(.{
-        .name = "godot-extension-api",
-        .description = "Path to Godot extension_api.json file (bypasses cache)",
-        .type = .String,
-        .default_value = .{ .String = "" },
-    });
-
-    try root.addFlag(.{
         .name = "output-format",
         .description = "Output format (markdown or terminal). Defaults to terminal for TTY, markdown otherwise.",
         .type = .String,
@@ -44,14 +37,11 @@ pub fn build(allocator: Allocator, writer: *Writer, reader: *Reader) !*Command {
 fn runLookup(ctx: CommandContext) !void {
     const clear_cache = ctx.flag("clear-cache", bool);
 
-    const api_json_path_raw = ctx.flag("godot-extension-api", []const u8);
-    const api_json_path: ?[]const u8 = if (api_json_path_raw.len == 0) null else api_json_path_raw;
-
     const output_format_raw = ctx.flag("output-format", []const u8);
     const output_format: OutputFormat = std.meta.stringToEnum(OutputFormat, output_format_raw) orelse .detect;
 
     // print help when no arguments/flags are provided
-    if (!clear_cache and ctx.positional_args.len == 0 and api_json_path == null) {
+    if (!clear_cache and ctx.positional_args.len == 0) {
         try ctx.command.printHelp();
         return;
     }
@@ -65,10 +55,8 @@ fn runLookup(ctx: CommandContext) !void {
 
     const symbol = ctx.getArg("symbol") orelse return;
 
-    gdoc.formatAndDisplay(ctx.allocator, symbol, api_json_path, ctx.writer, output_format, config) catch |err| switch (err) {
+    gdoc.formatAndDisplay(ctx.allocator, symbol, ctx.writer, output_format, config) catch |err| switch (err) {
         DocDatabaseError.SymbolNotFound => try ctx.writer.print("Symbol '{s}' not found.\n", .{symbol}),
-        error.ApiFileNotFound => try ctx.writer.print("Error: API file not found: {s}\n", .{api_json_path.?}),
-        error.InvalidApiJson => try ctx.writer.print("Error: Invalid JSON in API file: {s}\n", .{api_json_path.?}),
         else => return err,
     };
 

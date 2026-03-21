@@ -3,7 +3,6 @@ const known_folders = @import("known-folders");
 
 const Config = @This();
 
-no_xml: bool,
 cache_dir: []const u8,
 
 pub fn init(allocator: std.mem.Allocator) !Config {
@@ -18,7 +17,6 @@ pub fn init(allocator: std.mem.Allocator) !Config {
     };
 
     return .{
-        .no_xml = hasEnv("GDOC_NO_XML"),
         .cache_dir = cache_dir,
     };
 }
@@ -28,7 +26,6 @@ pub fn deinit(self: Config, allocator: std.mem.Allocator) void {
 }
 
 pub const testing: Config = .{
-    .no_xml = true,
     .cache_dir = "/tmp/gdoc-test-cache",
 };
 
@@ -45,6 +42,5 @@ test "init" {
 }
 
 test "testing config" {
-    try std.testing.expect(Config.testing.no_xml);
     try std.testing.expectEqualStrings("/tmp/gdoc-test-cache", Config.testing.cache_dir);
 }
