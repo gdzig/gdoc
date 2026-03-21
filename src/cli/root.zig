@@ -56,14 +56,16 @@ fn runLookup(ctx: CommandContext) !void {
         return;
     }
 
+    const config: *const gdoc.Config = ctx.getContextData(gdoc.Config);
+
     if (clear_cache) {
-        try gdoc.cache.clearCache(ctx.allocator);
+        try gdoc.cache.clearCache(config);
         try ctx.writer.writeAll("Cache cleared.\n");
     }
 
     const symbol = ctx.getArg("symbol") orelse return;
 
-    gdoc.formatAndDisplay(ctx.allocator, symbol, api_json_path, ctx.writer, output_format) catch |err| switch (err) {
+    gdoc.formatAndDisplay(ctx.allocator, symbol, api_json_path, ctx.writer, output_format, config) catch |err| switch (err) {
         DocDatabaseError.SymbolNotFound => try ctx.writer.print("Symbol '{s}' not found.\n", .{symbol}),
         error.ApiFileNotFound => try ctx.writer.print("Error: API file not found: {s}\n", .{api_json_path.?}),
         error.InvalidApiJson => try ctx.writer.print("Error: Invalid JSON in API file: {s}\n", .{api_json_path.?}),

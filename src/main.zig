@@ -14,6 +14,9 @@ pub fn main() !void {
         std.debug.assert(dbg.deinit() == .ok);
     };
 
+    var config = try gdoc.Config.init(allocator);
+    defer config.deinit(allocator);
+
     var stdout_writer = File.stdout().writerStreaming(&.{});
     const stdout = &stdout_writer.interface;
 
@@ -24,7 +27,7 @@ pub fn main() !void {
     const root = try cli.build(allocator, stdout, stdin);
     defer root.deinit();
 
-    try root.execute(.{});
+    try root.execute(.{ .data = @ptrCast(&config) });
     try stdout.flush();
 }
 
@@ -33,3 +36,4 @@ const DebugAllocator = std.heap.DebugAllocator;
 const File = std.fs.File;
 
 const cli = @import("cli/root.zig");
+const gdoc = @import("gdoc");

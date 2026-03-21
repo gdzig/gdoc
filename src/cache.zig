@@ -1,8 +1,5 @@
-pub fn clearCache(allocator: Allocator) !void {
-    const cache_dir = try getCacheDir(allocator);
-    defer allocator.free(cache_dir);
-
-    std.fs.deleteTreeAbsolute(cache_dir) catch |err| switch (err) {
+pub fn clearCache(config: *const Config) !void {
+    std.fs.deleteTreeAbsolute(config.cache_dir) catch |err| switch (err) {
         error.FileNotFound => {},
         else => return err,
     };
@@ -10,29 +7,14 @@ pub fn clearCache(allocator: Allocator) !void {
 
 // TODO: move to fs module as it is not cache specific
 pub fn ensureDirectoryExists(dir_path: []const u8) !void {
-    var dir = std.fs.openDirAbsolute(dir_path, .{}) catch |err| {
-        switch (err) {
-            error.FileNotFound => {
-                try std.fs.makeDirAbsolute(dir_path);
-                return;
-            },
-            else => return err,
-        }
+    var dir = std.fs.openDirAbsolute(dir_path, .{}) catch |err| switch (err) {
+        error.FileNotFound => {
+            try std.fs.makeDirAbsolute(dir_path);
+            return;
+        },
+        else => return err,
     };
     defer dir.close();
-}
-
-pub fn getCacheDir(allocator: Allocator) ![]const u8 {
-    const cache_dir = try known_folders.getPath(allocator, .cache);
-    defer if (cache_dir) |cd| allocator.free(cd);
-
-    std.debug.assert(cache_dir != null);
-
-    return std.fmt.allocPrint(
-        allocator,
-        "{f}",
-        .{std.fs.path.fmtJoin(&[_][]const u8{ cache_dir.?, "gdoc" })},
-    );
 }
 
 pub fn getJsonCachePathInDir(allocator: Allocator, cache_dir: []const u8) ![]const u8 {
@@ -164,22 +146,9 @@ pub fn xmlDocsArePopulated(allocator: Allocator, cache_dir: []const u8) !bool {
     return false;
 }
 
-test "getCacheDir returns cache directory path" {
-    const allocator = std.testing.allocator;
-
-    const cache_dir = try getCacheDir(allocator);
-    defer allocator.free(cache_dir);
-
-    // Should return a non-empty path
-    try std.testing.expect(cache_dir.len > 0);
-
-    // Should end with "gdoc"
-    try std.testing.expect(std.mem.endsWith(u8, cache_dir, "gdoc"));
-
-    // Should be an absolute path (starts with / on Unix or contains : on Windows)
-    const is_absolute = cache_dir[0] == '/' or
-        (cache_dir.len > 2 and cache_dir[1] == ':');
-    try std.testing.expect(is_absolute);
+test "testing config has valid cache directory" {
+    try std.testing.expect(Config.testing.cache_dir.len > 0);
+    try std.testing.expect(std.mem.indexOf(u8, Config.testing.cache_dir, "gdoc") != null);
 }
 
 
@@ -234,9 +203,7 @@ test "ensureCacheDir succeeds when directory already exists" {
 
 test "clearCache deletes cache directory" {
     const allocator = std.testing.allocator;
-
-    const cache_dir = try getCacheDir(allocator);
-    defer allocator.free(cache_dir);
+    const cache_dir = Config.testing.cache_dir;
 
     // Ensure cache directory exists
     try ensureDirectoryExists(cache_dir);
@@ -261,7 +228,7 @@ test "clearCache deletes cache directory" {
     _ = try std.fs.openFileAbsolute(index_path, .{});
 
     // Clear cache
-    try clearCache(allocator);
+    try clearCache(&Config.testing);
 
     // Verify cache directory is deleted
     const dir_result = std.fs.openDirAbsolute(cache_dir, .{});
@@ -269,24 +236,17 @@ test "clearCache deletes cache directory" {
 }
 
 test "clearCache succeeds when cache files do not exist" {
-    const allocator = std.testing.allocator;
-
     // Don't create any files - just call clearCache
     // Should not error even if files don't exist
-    try clearCache(allocator);
+    try clearCache(&Config.testing);
 }
 
 test "clearCache succeeds when cache directory does not exist" {
-    const allocator = std.testing.allocator;
-
-    const cache_dir = try getCacheDir(allocator);
-    defer allocator.free(cache_dir);
-
     // Make sure cache directory doesn't exist
-    std.fs.deleteTreeAbsolute(cache_dir) catch {};
+    std.fs.deleteTreeAbsolute(Config.testing.cache_dir) catch {};
 
     // Call clearCache - should not error
-    try clearCache(allocator);
+    try clearCache(&Config.testing);
 }
 
 // RED PHASE: Test for resolveSymbolPath function
@@ -762,6 +722,6 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Writer = std.Io.Writer;
 
-const known_folders = @import("known-folders");
+const Config = @import("Config.zig");
 const DocDatabase = @import("DocDatabase.zig");
 const source_fetch = @import("source_fetch.zig");

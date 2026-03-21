@@ -8,7 +8,7 @@ pub const LookupError = error{
     ApiFileNotFound,
 } || Writer.Error || DocDatabase.Error || File.OpenError;
 
-pub fn markdownForSymbol(allocator: Allocator, symbol: []const u8, api_json_path: ?[]const u8, writer: *Writer) !void {
+pub fn markdownForSymbol(allocator: Allocator, symbol: []const u8, api_json_path: ?[]const u8, writer: *Writer, config: *const Config) !void {
     var arena = ArenaAllocator.init(allocator);
     defer arena.deinit();
 
@@ -32,8 +32,7 @@ pub fn markdownForSymbol(allocator: Allocator, symbol: []const u8, api_json_path
             try writer.print("\n## Description\n\n{s}\n", .{desc});
         }
     } else {
-        const cache_path = try cache.getCacheDir(allocator);
-        defer allocator.free(cache_path);
+        const cache_path = config.cache_dir;
 
         const needs_full_rebuild = !try cache.cacheIsPopulated(allocator, cache_path);
 
@@ -42,12 +41,12 @@ pub fn markdownForSymbol(allocator: Allocator, symbol: []const u8, api_json_path
             try api.generateApiJsonIfNotExists(allocator, "godot", cache_path);
 
             // Fetch XML docs if missing (best-effort, requires godot)
-            if (!try cache.xmlDocsArePopulated(allocator, cache_path)) {
+            if (!config.no_xml and !try cache.xmlDocsArePopulated(allocator, cache_path)) {
                 fetchXmlDocs(allocator, cache_path);
             }
 
             var spinner: Spinner = .{ .message = "Building documentation cache..." };
-            if (!xmlSupplementationDisabled()) spinner.start();
+            if (!config.no_xml) spinner.start();
             defer spinner.finish();
 
             const json_path = try cache.getJsonCachePathInDir(allocator, cache_path);
@@ -67,21 +66,21 @@ pub fn markdownForSymbol(allocator: Allocator, symbol: []const u8, api_json_path
     }
 }
 
-pub fn formatAndDisplay(allocator: Allocator, symbol: []const u8, api_json_path: ?[]const u8, writer: *Writer, format: OutputFormat) !void {
+pub fn formatAndDisplay(allocator: Allocator, symbol: []const u8, api_json_path: ?[]const u8, writer: *Writer, format: OutputFormat, config: *const Config) !void {
     switch (format) {
-        .markdown => try markdownForSymbol(allocator, symbol, api_json_path, writer),
-        .terminal => try renderWithZigdown(allocator, symbol, api_json_path, writer),
+        .markdown => try markdownForSymbol(allocator, symbol, api_json_path, writer, config),
+        .terminal => try renderWithZigdown(allocator, symbol, api_json_path, writer, config),
         .detect => {
-            try formatAndDisplay(allocator, symbol, api_json_path, writer, if (File.stdout().isTty()) .terminal else .markdown);
+            try formatAndDisplay(allocator, symbol, api_json_path, writer, if (File.stdout().isTty()) .terminal else .markdown, config);
         },
     }
 }
 
-fn renderWithZigdown(allocator: Allocator, symbol: []const u8, api_json_path: ?[]const u8, writer: *Writer) !void {
+fn renderWithZigdown(allocator: Allocator, symbol: []const u8, api_json_path: ?[]const u8, writer: *Writer, config: *const Config) !void {
     var markdown_buf: AllocatingWriter = .init(allocator);
     defer markdown_buf.deinit();
 
-    try markdownForSymbol(allocator, symbol, api_json_path, &markdown_buf.writer);
+    try markdownForSymbol(allocator, symbol, api_json_path, &markdown_buf.writer, config);
     const markdown = markdown_buf.written();
 
     renderMarkdownWithZigdown(allocator, markdown, writer) catch |err| {
@@ -127,7 +126,7 @@ test "markdownForSymbol returns ApiFileNotFound for nonexistent file" {
     var buf: [4096]u8 = undefined;
     var discard = std.io.Writer.Discarding.init(&buf);
 
-    const result = markdownForSymbol(allocator, "Node2D", nonexistent_path, &discard.writer);
+    const result = markdownForSymbol(allocator, "Node2D", nonexistent_path, &discard.writer, &Config.testing);
 
     try std.testing.expectError(LookupError.ApiFileNotFound, result);
 }
@@ -150,7 +149,7 @@ test "markdownForSymbol returns InvalidApiJson for malformed JSON" {
     var buf: [4096]u8 = undefined;
     var discard = std.io.Writer.Discarding.init(&buf);
 
-    const result = markdownForSymbol(allocator, "Node2D", bad_api_path, &discard.writer);
+    const result = markdownForSymbol(allocator, "Node2D", bad_api_path, &discard.writer, &Config.testing);
 
     try std.testing.expectError(DocDatabase.Error.InvalidApiJson, result);
 }
@@ -177,7 +176,7 @@ test "markdownForSymbol loads from custom API file and finds symbol" {
     defer allocating_writer.deinit();
 
     // Should successfully load and display TestClass
-    try markdownForSymbol(allocator, "TestClass", api_path, &allocating_writer.writer);
+    try markdownForSymbol(allocator, "TestClass", api_path, &allocating_writer.writer, &Config.testing);
 
     // Verify something was written to output
     const written = try allocating_writer.toOwnedSlice();
@@ -207,7 +206,7 @@ test "markdownForSymbol returns SymbolNotFound when symbol doesn't exist" {
     var discard = std.io.Writer.Discarding.init(&buf);
 
     // Try to look up NonExistentClass which is not in the API
-    const result = markdownForSymbol(allocator, "NonExistentClass", api_path, &discard.writer);
+    const result = markdownForSymbol(allocator, "NonExistentClass", api_path, &discard.writer, &Config.testing);
 
     try std.testing.expectError(DocDatabase.Error.SymbolNotFound, result);
 }
@@ -238,7 +237,7 @@ test "markdownForSymbol works with relative path" {
     defer allocating_writer.deinit();
 
     // Use relative path
-    try markdownForSymbol(allocator, "TestClass", "test_api.json", &allocating_writer.writer);
+    try markdownForSymbol(allocator, "TestClass", "test_api.json", &allocating_writer.writer, &Config.testing);
 
     const written = try allocating_writer.toOwnedSlice();
     defer allocator.free(written);
@@ -276,7 +275,7 @@ test "formatAndDisplay with markdown format produces markdown output" {
     defer allocating_writer.deinit();
 
     // Call formatAndDisplay with markdown format
-    try formatAndDisplay(allocator, "TestClass", api_path, &allocating_writer.writer, .markdown);
+    try formatAndDisplay(allocator, "TestClass", api_path, &allocating_writer.writer, .markdown, &Config.testing);
 
     const written = try allocating_writer.toOwnedSlice();
     defer allocator.free(written);
@@ -308,7 +307,7 @@ test "formatAndDisplay with terminal format produces terminal output" {
     defer allocating_writer.deinit();
 
     // Call formatAndDisplay with terminal format
-    try formatAndDisplay(allocator, "TestClass", api_path, &allocating_writer.writer, .terminal);
+    try formatAndDisplay(allocator, "TestClass", api_path, &allocating_writer.writer, .terminal, &Config.testing);
 
     const written = try allocating_writer.toOwnedSlice();
     defer allocator.free(written);
@@ -321,13 +320,10 @@ test "formatAndDisplay with terminal format produces terminal output" {
 // Test verifies the normal cache flow when api_json_path is null
 test "markdownForSymbol reads from markdown cache when available" {
     const allocator = std.testing.allocator;
-
-    // Get the actual cache directory
-    const cache_dir = try cache.getCacheDir(allocator);
-    defer allocator.free(cache_dir);
+    const cache_dir = Config.testing.cache_dir;
 
     // Clear any existing cache to start fresh
-    cache.clearCache(allocator) catch {};
+    cache.clearCache(&Config.testing) catch {};
 
     // Ensure cache directory exists
     try cache.ensureDirectoryExists(cache_dir);
@@ -357,7 +353,7 @@ test "markdownForSymbol reads from markdown cache when available" {
     defer allocating_writer.deinit();
 
     // Call markdownForSymbol with null api_json_path - should use cache
-    try markdownForSymbol(allocator, "TestCachedClass", null, &allocating_writer.writer);
+    try markdownForSymbol(allocator, "TestCachedClass", null, &allocating_writer.writer, &Config.testing);
 
     const written = allocating_writer.written();
 
@@ -365,20 +361,17 @@ test "markdownForSymbol reads from markdown cache when available" {
     try std.testing.expect(std.mem.indexOf(u8, written, "cached test class from markdown cache") != null);
 
     // Cleanup
-    cache.clearCache(allocator) catch {};
+    cache.clearCache(&Config.testing) catch {};
 }
 
 // RED PHASE: Test for automatic cache population
 // This test verifies that markdownForSymbol auto-generates the cache when empty
 test "markdownForSymbol generates markdown cache when cache is empty" {
     const allocator = std.testing.allocator;
-
-    // Get the actual cache directory
-    const cache_dir = try cache.getCacheDir(allocator);
-    defer allocator.free(cache_dir);
+    const cache_dir = Config.testing.cache_dir;
 
     // Clear cache to start empty
-    cache.clearCache(allocator) catch {};
+    cache.clearCache(&Config.testing) catch {};
 
     // Ensure cache directory exists
     try cache.ensureDirectoryExists(cache_dir);
@@ -397,7 +390,7 @@ test "markdownForSymbol generates markdown cache when cache is empty" {
 
     // Call markdownForSymbol with null api_json_path
     // Should auto-generate cache and return the symbol
-    try markdownForSymbol(allocator, "AutoGenClass", null, &allocating_writer.writer);
+    try markdownForSymbol(allocator, "AutoGenClass", null, &allocating_writer.writer, &Config.testing);
 
     const written = allocating_writer.written();
 
@@ -412,18 +405,10 @@ test "markdownForSymbol generates markdown cache when cache is empty" {
     cache_file.close();
 
     // Cleanup
-    cache.clearCache(allocator) catch {};
-}
-
-fn xmlSupplementationDisabled() bool {
-    var buf: [256]u8 = undefined;
-    var fba = std.heap.FixedBufferAllocator.init(&buf);
-    return std.process.hasEnvVar(fba.allocator(), "GDOC_NO_XML") catch false;
+    cache.clearCache(&Config.testing) catch {};
 }
 
 fn fetchXmlDocs(allocator: Allocator, cache_path: []const u8) void {
-    if (xmlSupplementationDisabled()) return;
-
     const xml_dir = cache.getXmlDocsDirInCache(allocator, cache_path) catch return;
     defer allocator.free(xml_dir);
 
@@ -461,8 +446,6 @@ fn fetchXmlDocs(allocator: Allocator, cache_path: []const u8) void {
 }
 
 fn mergeXmlDocs(arena_allocator: Allocator, tmp_allocator: Allocator, db: *DocDatabase, cache_path: []const u8) void {
-    if (xmlSupplementationDisabled()) return;
-
     const xml_dir = cache.getXmlDocsDirInCache(tmp_allocator, cache_path) catch return;
     defer tmp_allocator.free(xml_dir);
 
@@ -576,11 +559,10 @@ const File = std.fs.File;
 const Writer = std.Io.Writer;
 const AllocatingWriter = Writer.Allocating;
 
-const known_folders = @import("known-folders");
-
 pub const DocDatabase = @import("DocDatabase.zig");
 pub const XmlDocParser = @import("XmlDocParser.zig");
 pub const cache = @import("cache.zig");
+pub const Config = @import("Config.zig");
 pub const api = @import("api.zig");
 pub const source_fetch = @import("source_fetch.zig");
 const Spinner = @import("Spinner.zig");
