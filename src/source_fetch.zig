@@ -3,6 +3,13 @@ pub const VersionInfo = struct {
     minor: []const u8,
     patch: []const u8,
     hash: ?[]const u8,
+    /// When non-null, this is the allocated buffer that backs major/minor/patch/hash.
+    /// Call `deinit(allocator)` to free it.
+    backing: ?[]u8 = null,
+
+    pub fn deinit(self: VersionInfo, allocator: Allocator) void {
+        if (self.backing) |buf| allocator.free(buf);
+    }
 
     /// Formats the version as "major.minor.patch" into the provided buffer.
     pub fn formatVersion(self: VersionInfo, buf: []u8) ?[]const u8 {
@@ -12,6 +19,7 @@ pub const VersionInfo = struct {
 
 /// Parses a Godot version string like "4.6.1.stable.official.14d19694e".
 /// Returns null for empty or malformed strings.
+/// The returned slices point into `version_str`; the caller must ensure it outlives the result.
 pub fn parseGodotVersion(version_str: []const u8) ?VersionInfo {
     if (version_str.len == 0) return null;
 
@@ -46,6 +54,37 @@ pub fn parseGodotVersion(version_str: []const u8) ?VersionInfo {
         .patch = patch,
         .hash = hash,
     };
+}
+
+/// Runs the godot executable at `godot_path` with `--version` and parses the output.
+/// Returns null if the process fails or the output is malformed.
+/// The returned VersionInfo owns its backing buffer; call `result.deinit(allocator)` when done.
+pub fn getGodotVersionFromPath(allocator: Allocator, godot_path: []const u8) ?VersionInfo {
+    const result = std.process.Child.run(.{
+        .argv = &.{ godot_path, "--version" },
+        .allocator = allocator,
+    }) catch return null;
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    switch (result.term) {
+        .Exited => |code| if (code != 0) return null,
+        else => return null,
+    }
+
+    const trimmed = std.mem.trimRight(u8, result.stdout, &std.ascii.whitespace);
+    const owned = allocator.dupe(u8, trimmed) catch return null;
+    var info = parseGodotVersion(owned) orelse {
+        allocator.free(owned);
+        return null;
+    };
+    info.backing = owned;
+    return info;
+}
+
+/// Convenience wrapper that calls `getGodotVersionFromPath` with "godot" from PATH.
+pub fn getGodotVersion(allocator: Allocator) ?VersionInfo {
+    return getGodotVersionFromPath(allocator, "godot");
 }
 
 test "parseGodotVersion: standard version with hash" {
@@ -101,4 +140,30 @@ test "VersionInfo.formatVersion produces correct output" {
     try std.testing.expectEqualStrings("4.6.1", formatted.?);
 }
 
+test "getGodotVersionFromPath with fake godot script" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const tmp_path = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(tmp_path);
+
+    const script = "#!/bin/sh\necho '4.6.1.stable.official.14d19694e'";
+    try tmp_dir.dir.writeFile(.{ .sub_path = "fake-godot", .data = script });
+
+    var file = try tmp_dir.dir.openFile("fake-godot", .{});
+    try file.chmod(0o755);
+    file.close();
+
+    const fake_path = try std.fmt.allocPrint(allocator, "{s}/fake-godot", .{tmp_path});
+    defer allocator.free(fake_path);
+
+    const result = getGodotVersionFromPath(allocator, fake_path);
+    try std.testing.expect(result != null);
+    defer result.?.deinit(allocator);
+    try std.testing.expectEqualStrings("14d19694e", result.?.hash.?);
+}
+
+const Allocator = std.mem.Allocator;
 const std = @import("std");
