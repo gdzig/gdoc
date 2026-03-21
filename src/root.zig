@@ -417,6 +417,7 @@ const known_folders = @import("known-folders");
 pub const DocDatabase = @import("DocDatabase.zig");
 pub const cache = @import("cache.zig");
 pub const api = @import("api.zig");
+pub const source_fetch = @import("source_fetch.zig");
 
 const zigdown = @import("zigdown");
 const ConsoleRenderer = zigdown.ConsoleRenderer;
