@@ -1,3 +1,8 @@
+## [0.1.2] - 2026-03-22
+
+### 🐛 Bug Fixes
+
+- Display correct version from build.zig.zon in CLI
 ## [0.1.1] - 2026-03-21
 
 ### 🐛 Bug Fixes
