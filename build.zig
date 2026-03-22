@@ -1,9 +1,11 @@
 const std = @import("std");
+const BuildZigZon = @import("build.zig.zon");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     const build_options = b.addOptions();
+    build_options.addOption([]const u8, "version", BuildZigZon.version);
 
     const bbcodez = b.dependency("bbcodez", .{
         .target = target,
@@ -54,6 +56,7 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
+    exe.root_module.addOptions("build_options", build_options);
 
     b.installArtifact(exe);
 

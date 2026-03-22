@@ -1,3 +1,5 @@
+const version = SemanticVersion.parse(build_options.version) catch @compileError("Invalid version");
+
 pub fn build(allocator: Allocator, writer: *Writer, reader: *Reader) !*Command {
     const root = try Command.init(
         writer,
@@ -6,7 +8,7 @@ pub fn build(allocator: Allocator, writer: *Writer, reader: *Reader) !*Command {
         .{
             .name = "gdoc",
             .description = "Godot documentation CLI",
-            .version = .{ .major = 0, .minor = 1, .patch = 0 },
+            .version = version,
         },
         runLookup,
     );
@@ -71,7 +73,10 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Writer = std.Io.Writer;
 const Reader = std.Io.Reader;
+const SemanticVersion = std.SemanticVersion;
 
 const zli = @import("zli");
 const Command = zli.Command;
 const CommandContext = zli.CommandContext;
+
+const build_options = @import("build_options");
