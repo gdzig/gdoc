@@ -4,7 +4,7 @@
 
 > Fast, offline Godot API documentation in your terminal
 
-![Screenshot of gdoc](screenshot_1.png)
+![gdoc demo](demo/demo.gif)
 
 **gdoc** is a command-line documentation viewer for Godot Engine. Instantly look up classes, methods, and properties without leaving your terminal or opening a browser.
 

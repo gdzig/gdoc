@@ -5,7 +5,12 @@ godot = "latest"
 git-cliff = "latest"
 usage = "latest"
 "forgejo:tensorush/zq" = { version = "0.8.0", bin = "zq" }
+vhs = "latest"
 
 [tasks.test]
 alias = ["t"]
 run = "zig build test"
+
+[tasks.demo]
+dir = "demo"
+run = "vhs demo.tape"
