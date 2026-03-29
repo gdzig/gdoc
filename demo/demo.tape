@@ -1,5 +1,4 @@
 Output demo.gif
-Output demo.webm
 Set FontSize 18
 Set FontFamily "JetBrains Mono"
 Set Width 1200
