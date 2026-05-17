@@ -132,7 +132,6 @@ test "testing config has valid cache directory" {
     try std.testing.expect(std.mem.indexOf(u8, Config.testing.cache_dir, "gdoc") != null);
 }
 
-
 test "ensureCacheDir creates directory if it doesn't exist" {
     const allocator = std.testing.allocator;
 
@@ -180,7 +179,6 @@ test "ensureCacheDir succeeds when directory already exists" {
     // Cleanup
     try std.fs.deleteTreeAbsolute(test_cache);
 }
-
 
 test "clearCache deletes cache directory" {
     const allocator = std.testing.allocator;
@@ -479,6 +477,75 @@ test "generateMarkdownCache writes all symbols to cache directory" {
     const x_path = try std.fmt.allocPrint(allocator, "{s}/Vector2/x.md", .{cache_dir});
     defer allocator.free(x_path);
     _ = try std.fs.openFileAbsolute(x_path, .{});
+}
+
+test "generateMarkdownCache writes and reads fully-qualified enum container" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const cache_dir = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(cache_dir);
+
+    var db = DocDatabase{
+        .symbols = .empty,
+    };
+    defer db.symbols.deinit(allocator);
+
+    try db.symbols.put(allocator, "@GlobalScope", DocDatabase.Entry{
+        .key = "@GlobalScope",
+        .name = "@GlobalScope",
+        .kind = .class,
+    });
+
+    var enum_members = [_]usize{ 2, 3 };
+    try db.symbols.put(allocator, "@GlobalScope.JoyButton", DocDatabase.Entry{
+        .key = "@GlobalScope.JoyButton",
+        .name = "JoyButton",
+        .parent_index = 0,
+        .kind = .enum_container,
+        .members = &enum_members,
+    });
+
+    try db.symbols.put(allocator, "@GlobalScope.JoyButton.JOY_BUTTON_A", DocDatabase.Entry{
+        .key = "@GlobalScope.JoyButton.JOY_BUTTON_A",
+        .name = "JOY_BUTTON_A",
+        .parent_index = 1,
+        .kind = .enum_value,
+        .description = "Bottom action button.",
+        .default_value = "0",
+    });
+
+    try db.symbols.put(allocator, "@GlobalScope.JoyButton.JOY_BUTTON_B", DocDatabase.Entry{
+        .key = "@GlobalScope.JoyButton.JOY_BUTTON_B",
+        .name = "JOY_BUTTON_B",
+        .parent_index = 1,
+        .kind = .enum_value,
+        .description = "Right action button.",
+        .default_value = "1",
+    });
+
+    try generateMarkdownCache(allocator, db, cache_dir);
+
+    var output: Writer.Allocating = .init(allocator);
+    defer output.deinit();
+    try readSymbolMarkdown(allocator, "@GlobalScope.JoyButton", cache_dir, &output.writer);
+
+    const written = output.written();
+    try std.testing.expect(std.mem.indexOf(u8, written, "# @GlobalScope.JoyButton") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "## Values") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "JOY_BUTTON_A") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "= `0`") != null);
+
+    var value_output: Writer.Allocating = .init(allocator);
+    defer value_output.deinit();
+    try readSymbolMarkdown(allocator, "@GlobalScope.JoyButton.JOY_BUTTON_A", cache_dir, &value_output.writer);
+
+    const value_written = value_output.written();
+    try std.testing.expect(std.mem.indexOf(u8, value_written, "# @GlobalScope.JoyButton.JOY_BUTTON_A") != null);
+    try std.testing.expect(std.mem.indexOf(u8, value_written, "**Parent**: JoyButton") != null);
+    try std.testing.expect(std.mem.indexOf(u8, value_written, "Bottom action button.") != null);
 }
 
 test "generateMarkdownCache handles empty database" {

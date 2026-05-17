@@ -14,6 +14,8 @@ pub const EntryKind = enum {
     method,
     property,
     constant,
+    enum_container,
+
     enum_value,
     global_function,
     operator,
@@ -386,6 +388,18 @@ pub fn loadFromXmlDir(arena_allocator: Allocator, tmp_allocator: Allocator, xml_
         }
 
         // Process constants (with enum grouping)
+        const EnumGroup = struct {
+            entry_index: usize,
+            value_indices: ArrayList(usize) = .empty,
+        };
+        var enum_groups: StringArrayHashMap(EnumGroup) = .empty;
+        defer {
+            for (enum_groups.values()) |*group| {
+                group.value_indices.deinit(tmp_allocator);
+            }
+            enum_groups.deinit(tmp_allocator);
+        }
+
         if (class_doc.constants) |constants| {
             for (constants) |constant| {
                 const sig = try buildConstantSignature(arena_allocator, constant);
@@ -394,12 +408,27 @@ pub fn loadFromXmlDir(arena_allocator: Allocator, tmp_allocator: Allocator, xml_
                 else
                     null;
                 if (constant.qualifiers) |enum_name| {
+                    var group_ptr = enum_groups.getPtr(enum_name);
+                    if (group_ptr == null) {
+                        const enum_key = try std.fmt.allocPrint(arena_allocator, "{s}.{s}", .{ class_doc.name, enum_name });
+                        try db.symbols.put(arena_allocator, enum_key, .{
+                            .key = enum_key,
+                            .name = enum_name,
+                            .parent_index = class_idx,
+                            .kind = .enum_container,
+                        });
+                        const enum_idx = db.symbols.getIndex(enum_key).?;
+                        try member_indices.append(tmp_allocator, enum_idx);
+                        try enum_groups.put(tmp_allocator, enum_name, .{ .entry_index = enum_idx });
+                        group_ptr = enum_groups.getPtr(enum_name).?;
+                    }
+
                     // Enum-grouped constant: "ClassName.EnumName.VALUE_NAME"
                     const dotted_key = try std.fmt.allocPrint(arena_allocator, "{s}.{s}.{s}", .{ class_doc.name, enum_name, constant.name });
                     const child: Entry = .{
                         .key = dotted_key,
                         .name = constant.name,
-                        .parent_index = class_idx,
+                        .parent_index = group_ptr.?.entry_index,
                         .kind = .enum_value,
                         .description = desc,
                         .signature = sig,
@@ -408,7 +437,7 @@ pub fn loadFromXmlDir(arena_allocator: Allocator, tmp_allocator: Allocator, xml_
                     };
                     try db.symbols.put(arena_allocator, dotted_key, child);
                     const child_idx = db.symbols.getIndex(dotted_key).?;
-                    try member_indices.append(tmp_allocator, child_idx);
+                    try group_ptr.?.value_indices.append(tmp_allocator, child_idx);
                 } else {
                     // Regular constant: "ClassName.CONSTANT_NAME"
                     const dotted_key = try std.fmt.allocPrint(arena_allocator, "{s}.{s}", .{ class_doc.name, constant.name });
@@ -426,6 +455,11 @@ pub fn loadFromXmlDir(arena_allocator: Allocator, tmp_allocator: Allocator, xml_
                     try member_indices.append(tmp_allocator, child_idx);
                 }
             }
+        }
+
+        for (enum_groups.values()) |group| {
+            const members_slice = try arena_allocator.dupe(usize, group.value_indices.items);
+            db.symbols.values()[group.entry_index].members = members_slice;
         }
 
         // Process constructors
@@ -625,7 +659,11 @@ fn generateMarkdownForEntry(self: DocDatabase, allocator: Allocator, entry: Entr
     }
 
     if (entry.members) |member_indices| {
-        try self.generateMemberListings(allocator, member_indices, writer);
+        if (entry.kind == .enum_container) {
+            try self.formatEnumValueSection(member_indices, writer);
+        } else {
+            try self.generateMemberListings(allocator, member_indices, writer);
+        }
     }
 }
 
@@ -655,7 +693,7 @@ fn generateMemberListings(self: DocDatabase, allocator: Allocator, member_indice
             .operator => try operators.append(allocator, idx),
             .signal => try signals.append(allocator, idx),
             .constant => try constants.append(allocator, idx),
-            .enum_value => try enums.append(allocator, idx),
+            .enum_container => try enums.append(allocator, idx),
             else => continue,
         }
     }
@@ -675,6 +713,31 @@ fn formatMemberSection(self: DocDatabase, section_name: []const u8, member_indic
         for (member_indices) |idx| {
             try self.formatMemberLine(idx, writer);
         }
+    }
+}
+
+fn formatEnumValueSection(self: DocDatabase, member_indices: []usize, writer: *Writer) !void {
+    if (member_indices.len == 0) return;
+
+    try writer.writeAll("\n## Values\n\n");
+    for (member_indices) |idx| {
+        const member = self.symbols.values()[idx];
+        if (member.kind != .enum_value) continue;
+
+        try writer.print("- **{s}**", .{member.name});
+        if (member.default_value) |default| {
+            try writer.print(" = `{s}`", .{default});
+        }
+
+        if (member.brief_description) |brief| {
+            try writer.print(" - {s}", .{brief});
+        } else if (member.description) |desc| {
+            const new_line_idx = std.mem.indexOf(u8, desc, "\n");
+            const first_line = if (new_line_idx) |line_idx| desc[0..line_idx] else desc;
+            try writer.print(" - {s}", .{first_line});
+        }
+
+        try writer.writeByte('\n');
     }
 }
 
@@ -1160,6 +1223,53 @@ test "loadFromXmlDir groups constants with enum attribute as enum_value entries"
     try std.testing.expectEqual(EntryKind.enum_value, always_entry.kind);
 }
 
+test "loadFromXmlDir creates fully-qualified enum container entries" {
+    var arena = ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const global_scope_xml =
+        \\<?xml version="1.0" encoding="UTF-8" ?>
+        \\<class name="@GlobalScope">
+        \\    <brief_description>Global scope.</brief_description>
+        \\    <description>Global constants and functions.</description>
+        \\    <constants>
+        \\        <constant name="JOY_BUTTON_A" value="0" enum="JoyButton">Bottom action button.</constant>
+        \\        <constant name="JOY_BUTTON_B" value="1" enum="JoyButton">Right action button.</constant>
+        \\    </constants>
+        \\</class>
+    ;
+
+    try tmp_dir.dir.writeFile(.{ .sub_path = "@GlobalScope.xml", .data = global_scope_xml });
+
+    const tmp_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(tmp_path);
+
+    const db = try DocDatabase.loadFromXmlDir(arena.allocator(), std.testing.allocator, tmp_path);
+
+    const enum_entry = db.symbols.get("@GlobalScope.JoyButton").?;
+    try std.testing.expectEqual(EntryKind.enum_container, enum_entry.kind);
+    try std.testing.expectEqualStrings("JoyButton", enum_entry.name);
+    try std.testing.expect(enum_entry.members != null);
+    try std.testing.expectEqual(@as(usize, 2), enum_entry.members.?.len);
+
+    const a_entry = db.symbols.get("@GlobalScope.JoyButton.JOY_BUTTON_A").?;
+    try std.testing.expectEqual(EntryKind.enum_value, a_entry.kind);
+    try std.testing.expectEqualStrings("0", a_entry.default_value.?);
+
+    var allocating: Writer.Allocating = .init(std.testing.allocator);
+    defer allocating.deinit();
+    try db.generateMarkdownForSymbol(std.testing.allocator, "@GlobalScope.JoyButton", &allocating.writer);
+    const written = allocating.written();
+    try std.testing.expect(std.mem.indexOf(u8, written, "# @GlobalScope.JoyButton") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "## Values") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "JOY_BUTTON_A") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "= `0`") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "Bottom action button.") != null);
+}
+
 test "loadFromXmlDir registers GlobalScope functions as top-level entries" {
     var arena = ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -1336,12 +1446,15 @@ test "lookupSymbolExact returns SymbolNotFound for missing symbol in XML databas
     const tmp_path = try tmp_dir.dir.realpathAlloc(allocator, ".");
     defer allocator.free(tmp_path);
 
-    try tmp_dir.dir.writeFile(.{ .sub_path = "Node.xml", .data =
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "Node.xml",
+        .data =
         \\<?xml version="1.0" encoding="UTF-8" ?>
         \\<class name="Node" inherits="Object">
         \\    <brief_description>Base class.</brief_description>
         \\    <description>Base node class.</description>
         \\</class>
+        ,
     });
 
     var arena = std.heap.ArenaAllocator.init(allocator);
