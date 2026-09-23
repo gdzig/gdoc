@@ -1,19 +1,20 @@
-const std = @import("std");
-const known_folders = @import("known-folders");
-
 const Config = @This();
 
 cache_dir: []const u8,
 
-pub fn init(allocator: std.mem.Allocator) !Config {
-    const cache_dir = if (std.process.getEnvVarOwned(allocator, "GDOC_CACHE_DIR") catch null) |dir|
-        dir
-    else blk: {
-        const base = try known_folders.getPath(allocator, .cache);
-        defer if (base) |b| allocator.free(b);
-        break :blk try std.fmt.allocPrint(allocator, "{f}", .{
-            std.fs.path.fmtJoin(&[_][]const u8{ base orelse "/tmp", "gdoc" }),
-        });
+pub fn init(allocator: std.mem.Allocator, io: std.Io, environ: std.process.Environ) !Config {
+    const cache_dir = environ.getAlloc(allocator, "GDOC_CACHE_DIR") catch |err| switch (err) {
+        error.EnvironmentVariableMissing => blk: {
+            var environ_map = try environ.createMap(allocator);
+            defer environ_map.deinit();
+
+            const base = try known_folders.getPath(io, allocator, &environ_map, .cache);
+            defer if (base) |b| allocator.free(b);
+            break :blk try std.fmt.allocPrint(allocator, "{f}", .{
+                std.fs.path.fmtJoin(&[_][]const u8{ base orelse "/tmp", "gdoc" }),
+            });
+        },
+        else => return err,
     };
 
     return .{
@@ -29,14 +30,8 @@ pub const testing: Config = .{
     .cache_dir = "/tmp/gdoc-test-cache",
 };
 
-fn hasEnv(key: []const u8) bool {
-    var buf: [256]u8 = undefined;
-    var fba = std.heap.FixedBufferAllocator.init(&buf);
-    return std.process.hasEnvVar(fba.allocator(), key) catch false;
-}
-
 test "init" {
-    const config = try Config.init(std.testing.allocator);
+    const config = try Config.init(std.testing.allocator, std.testing.io, std.testing.environ);
     defer config.deinit(std.testing.allocator);
     try std.testing.expect(config.cache_dir.len > 0);
 }
@@ -44,3 +39,6 @@ test "init" {
 test "testing config" {
     try std.testing.expectEqualStrings("/tmp/gdoc-test-cache", Config.testing.cache_dir);
 }
+
+const std = @import("std");
+const known_folders = @import("known-folders");

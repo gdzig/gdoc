@@ -59,20 +59,19 @@ pub fn parseGodotVersion(version_str: []const u8) ?VersionInfo {
 /// Runs the godot executable at `godot_path` with `--version` and parses the output.
 /// Returns null if the process fails or the output is malformed.
 /// The returned VersionInfo owns its backing buffer; call `result.deinit(allocator)` when done.
-pub fn getGodotVersionFromPath(allocator: Allocator, godot_path: []const u8) ?VersionInfo {
-    const result = std.process.Child.run(.{
+pub fn getGodotVersionFromPath(allocator: Allocator, io: Io, godot_path: []const u8) ?VersionInfo {
+    const result = std.process.run(allocator, io, .{
         .argv = &.{ godot_path, "--version" },
-        .allocator = allocator,
     }) catch return null;
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
     switch (result.term) {
-        .Exited => |code| if (code != 0) return null,
+        .exited => |code| if (code != 0) return null,
         else => return null,
     }
 
-    const trimmed = std.mem.trimRight(u8, result.stdout, &std.ascii.whitespace);
+    const trimmed = std.mem.trimEnd(u8, result.stdout, &std.ascii.whitespace);
     const owned = allocator.dupe(u8, trimmed) catch return null;
     var info = parseGodotVersion(owned) orelse {
         allocator.free(owned);
@@ -83,8 +82,8 @@ pub fn getGodotVersionFromPath(allocator: Allocator, godot_path: []const u8) ?Ve
 }
 
 /// Convenience wrapper that calls `getGodotVersionFromPath` with "godot" from PATH.
-pub fn getGodotVersion(allocator: Allocator) ?VersionInfo {
-    return getGodotVersionFromPath(allocator, "godot");
+pub fn getGodotVersion(allocator: Allocator, io: Io) ?VersionInfo {
+    return getGodotVersionFromPath(allocator, io, "godot");
 }
 
 test "parseGodotVersion: standard version with hash" {
@@ -160,10 +159,13 @@ pub fn buildTarballUrlFromHash(buf: []u8, hash: []const u8) ?[]const u8 {
 /// - `*/modules/*/doc_classes/*.xml` (module class docs)
 ///
 /// Extracted files are written to `xml_docs_dir` with their basename only.
-pub fn fetchAndExtractXmlDocs(allocator: Allocator, url: []const u8, xml_docs_dir: []const u8) !void {
-    cache.ensureDirectoryExists(xml_docs_dir) catch {};
+pub fn fetchAndExtractXmlDocs(allocator: Allocator, io: Io, url: []const u8, xml_docs_dir: []const u8) !void {
+    cache.ensureDirectoryExists(io, xml_docs_dir) catch {};
 
-    var client: std.http.Client = .{ .allocator = allocator };
+    var client: std.http.Client = .{
+        .allocator = allocator,
+        .io = io,
+    };
     defer client.deinit();
 
     const uri = std.Uri.parse(url) catch return error.InvalidUrl;
@@ -189,16 +191,16 @@ pub fn fetchAndExtractXmlDocs(allocator: Allocator, url: []const u8, xml_docs_di
     var decompressor = std.compress.flate.Decompress.init(http_reader, .gzip, &decompress_buf);
 
     // Iterate tar entries
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    var link_buf: [std.fs.max_path_bytes]u8 = undefined;
+    var path_buf: [Io.Dir.max_path_bytes]u8 = undefined;
+    var link_buf: [Io.Dir.max_path_bytes]u8 = undefined;
     var tar_iter = std.tar.Iterator.init(&decompressor.reader, .{
         .file_name_buffer = &path_buf,
         .link_name_buffer = &link_buf,
         .diagnostics = null,
     });
 
-    var dir = try std.fs.openDirAbsolute(xml_docs_dir, .{});
-    defer dir.close();
+    var dir = try Io.Dir.openDirAbsolute(io, xml_docs_dir, .{});
+    defer dir.close(io);
 
     while (try tar_iter.next()) |file| {
         if (file.kind != .file) continue;
@@ -215,11 +217,11 @@ pub fn fetchAndExtractXmlDocs(allocator: Allocator, url: []const u8, xml_docs_di
         // Extract basename
         const basename = std.fs.path.basename(name);
 
-        var out_file = dir.createFile(basename, .{}) catch continue;
-        defer out_file.close();
+        var out_file = dir.createFile(io, basename, .{}) catch continue;
+        defer out_file.close(io);
 
         var write_buf: [4096]u8 = undefined;
-        var file_writer = out_file.writer(&write_buf);
+        var file_writer = out_file.writer(io, &write_buf);
         tar_iter.streamRemaining(file, &file_writer.interface) catch continue;
         file_writer.interface.flush() catch continue;
     }
@@ -230,17 +232,17 @@ fn matchesPattern(path: []const u8, pattern: []const u8) bool {
 }
 
 /// Writes a version string to `xml_docs_dir/.complete` as a cache marker.
-pub fn writeCompleteMarker(allocator: Allocator, xml_docs_dir: []const u8, version_str: []const u8) !void {
+pub fn writeCompleteMarker(allocator: Allocator, io: Io, xml_docs_dir: []const u8, version_str: []const u8) !void {
     const marker_path = try std.fmt.allocPrint(allocator, "{f}", .{
         std.fs.path.fmtJoin(&[_][]const u8{ xml_docs_dir, ".complete" }),
     });
     defer allocator.free(marker_path);
 
-    var file = try std.fs.createFileAbsolute(marker_path, .{});
-    defer file.close();
+    var file = try Io.Dir.createFileAbsolute(io, marker_path, .{});
+    defer file.close(io);
 
     var buf: [4096]u8 = undefined;
-    var file_writer = file.writer(&buf);
+    var file_writer = file.writer(io, &buf);
     var writer = &file_writer.interface;
 
     try writer.writeAll(version_str);
@@ -248,17 +250,17 @@ pub fn writeCompleteMarker(allocator: Allocator, xml_docs_dir: []const u8, versi
 }
 
 /// Reads the content of `xml_docs_dir/.complete`, or returns null if not present.
-pub fn readCompleteMarker(allocator: Allocator, xml_docs_dir: []const u8) ?[]const u8 {
+pub fn readCompleteMarker(allocator: Allocator, io: Io, xml_docs_dir: []const u8) ?[]const u8 {
     const marker_path = std.fmt.allocPrint(allocator, "{f}", .{
         std.fs.path.fmtJoin(&[_][]const u8{ xml_docs_dir, ".complete" }),
     }) catch return null;
     defer allocator.free(marker_path);
 
-    const file = std.fs.openFileAbsolute(marker_path, .{}) catch return null;
-    defer file.close();
+    const file = Io.Dir.openFileAbsolute(io, marker_path, .{}) catch return null;
+    defer file.close(io);
 
     var buf: [4096]u8 = undefined;
-    var file_reader = file.reader(&buf);
+    var file_reader = file.reader(io, &buf);
     var reader = &file_reader.interface;
 
     var allocating: std.Io.Writer.Allocating = .init(allocator);
@@ -281,20 +283,20 @@ test "getGodotVersionFromPath with fake godot script" {
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const tmp_path = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", allocator);
     defer allocator.free(tmp_path);
 
     const script = "#!/bin/sh\necho '4.6.1.stable.official.14d19694e'";
-    try tmp_dir.dir.writeFile(.{ .sub_path = "fake-godot", .data = script });
+    try tmp_dir.dir.writeFile(std.testing.io, .{ .sub_path = "fake-godot", .data = script });
 
-    var file = try tmp_dir.dir.openFile("fake-godot", .{});
-    try file.chmod(0o755);
-    file.close();
+    var file = try tmp_dir.dir.openFile(std.testing.io, "fake-godot", .{});
+    try file.setPermissions(std.testing.io, .fromMode(0o755));
+    file.close(std.testing.io);
 
     const fake_path = try std.fmt.allocPrint(allocator, "{s}/fake-godot", .{tmp_path});
     defer allocator.free(fake_path);
 
-    const result = getGodotVersionFromPath(allocator, fake_path);
+    const result = getGodotVersionFromPath(allocator, std.testing.io, fake_path);
     try std.testing.expect(result != null);
     defer result.?.deinit(allocator);
     try std.testing.expectEqualStrings("14d19694e", result.?.hash.?);
@@ -342,13 +344,13 @@ test "writeCompleteMarker and readCompleteMarker round-trip" {
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const tmp_path = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", allocator);
     defer allocator.free(tmp_path);
 
     const version_str = "4.6.1";
-    try writeCompleteMarker(allocator, tmp_path, version_str);
+    try writeCompleteMarker(allocator, std.testing.io, tmp_path, version_str);
 
-    const result = readCompleteMarker(allocator, tmp_path);
+    const result = readCompleteMarker(allocator, std.testing.io, tmp_path);
     try std.testing.expect(result != null);
     defer allocator.free(result.?);
     try std.testing.expectEqualStrings(version_str, result.?);
@@ -360,13 +362,14 @@ test "readCompleteMarker returns null for non-existent marker" {
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const tmp_path = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", allocator);
     defer allocator.free(tmp_path);
 
-    const result = readCompleteMarker(allocator, tmp_path);
+    const result = readCompleteMarker(allocator, std.testing.io, tmp_path);
     try std.testing.expect(result == null);
 }
 
 const Allocator = std.mem.Allocator;
 const std = @import("std");
+const Io = std.Io;
 const cache = @import("cache.zig");

@@ -192,7 +192,7 @@ fn writeFencedCode(writer: *std.Io.Writer, raw: []const u8, lang: ?[]const u8) !
     var min_indent: usize = std.math.maxInt(usize);
     var line_iter = std.mem.splitScalar(u8, trimmed, '\n');
     while (line_iter.next()) |line| {
-        const stripped = std.mem.trimLeft(u8, line, " \t");
+        const stripped = std.mem.trimStart(u8, line, " \t");
         if (stripped.len == 0) continue;
         min_indent = @min(min_indent, line.len - stripped.len);
     }
@@ -214,7 +214,7 @@ fn writeFencedCode(writer: *std.Io.Writer, raw: []const u8, lang: ?[]const u8) !
     var idx: usize = 0;
     var scan_iter = std.mem.splitScalar(u8, trimmed, '\n');
     while (scan_iter.next()) |line| : (idx += 1) {
-        if (std.mem.trimLeft(u8, line, " \t").len > 0) last_content_line = idx;
+        if (std.mem.trimStart(u8, line, " \t").len > 0) last_content_line = idx;
     }
 
     line_iter = std.mem.splitScalar(u8, trimmed, '\n');
@@ -236,11 +236,11 @@ pub fn lookupSymbolExact(self: DocDatabase, symbol: []const u8) DocDatabase.Erro
     return self.symbols.get(symbol) orelse return DocDatabase.Error.SymbolNotFound;
 }
 
-pub fn loadFromXmlDir(arena_allocator: Allocator, tmp_allocator: Allocator, xml_dir_path: []const u8) !DocDatabase {
+pub fn loadFromXmlDir(arena_allocator: Allocator, tmp_allocator: Allocator, io: Io, xml_dir_path: []const u8) !DocDatabase {
     var db: DocDatabase = .{};
 
-    var dir = try std.fs.openDirAbsolute(xml_dir_path, .{ .iterate = true });
-    defer dir.close();
+    var dir = try Io.Dir.openDirAbsolute(io, xml_dir_path, .{ .iterate = true });
+    defer dir.close(io);
 
     // First pass: collect all files, parse them, register classes.
     // We need two passes for GlobalScope precedence, but we can do it in one
@@ -255,11 +255,11 @@ pub fn loadFromXmlDir(arena_allocator: Allocator, tmp_allocator: Allocator, xml_
     defer gdscript_entries.deinit(tmp_allocator);
 
     var iter = dir.iterate();
-    while (iter.next() catch return error.ReadFailed) |dir_entry| {
+    while (iter.next(io) catch return error.ReadFailed) |dir_entry| {
         if (dir_entry.kind != .file) continue;
         if (!std.mem.endsWith(u8, dir_entry.name, ".xml")) continue;
 
-        const content = dir.readFileAlloc(tmp_allocator, dir_entry.name, 2 * 1024 * 1024) catch continue;
+        const content = dir.readFileAlloc(io, dir_entry.name, tmp_allocator, .limited(2 * 1024 * 1024)) catch continue;
         defer tmp_allocator.free(content);
 
         const class_doc = XmlDocParser.parseClassDoc(arena_allocator, content) catch |err| {
@@ -731,11 +731,11 @@ test "generateMarkdownForSymbol for global function" {
     try db.symbols.put(allocator, "sin", entry);
 
     // Write snapshot
-    var file = try std.fs.cwd().createFile("snapshots/global_function.md", .{});
-    defer file.close();
+    var file = try Io.Dir.cwd().createFile(std.testing.io, "snapshots/global_function.md", .{});
+    defer file.close(std.testing.io);
 
     var buf: [4096]u8 = undefined;
-    var file_writer = file.writer(&buf);
+    var file_writer = file.writer(std.testing.io, &buf);
     const writer = &file_writer.interface;
 
     try db.generateMarkdownForSymbol(allocator, "sin", writer);
@@ -760,11 +760,11 @@ test "generateMarkdownForSymbol for class with brief description" {
     try db.symbols.put(allocator, "Node2D", entry);
 
     // Write snapshot
-    var file = try std.fs.cwd().createFile("snapshots/class_with_brief.md", .{});
-    defer file.close();
+    var file = try Io.Dir.cwd().createFile(std.testing.io, "snapshots/class_with_brief.md", .{});
+    defer file.close(std.testing.io);
 
     var buf: [4096]u8 = undefined;
-    var file_writer = file.writer(&buf);
+    var file_writer = file.writer(std.testing.io, &buf);
     const writer = &file_writer.interface;
 
     try db.generateMarkdownForSymbol(allocator, "Node2D", writer);
@@ -796,11 +796,11 @@ test "generateMarkdownForSymbol for property with parent" {
     try db.symbols.put(allocator, "Node2D.position", entry);
 
     // Write snapshot
-    var file = try std.fs.cwd().createFile("snapshots/property_with_parent.md", .{});
-    defer file.close();
+    var file = try Io.Dir.cwd().createFile(std.testing.io, "snapshots/property_with_parent.md", .{});
+    defer file.close(std.testing.io);
 
     var buf: [4096]u8 = undefined;
-    var file_writer = file.writer(&buf);
+    var file_writer = file.writer(std.testing.io, &buf);
     const writer = &file_writer.interface;
 
     try db.generateMarkdownForSymbol(allocator, "Node2D.position", writer);
@@ -847,11 +847,11 @@ test "generateMarkdownForSymbol for class without brief descriptions" {
     try db.symbols.put(allocator, "Vector2.normalized", method_entry);
 
     // Write snapshot
-    var file = try std.fs.cwd().createFile("snapshots/class_without_brief.md", .{});
-    defer file.close();
+    var file = try Io.Dir.cwd().createFile(std.testing.io, "snapshots/class_without_brief.md", .{});
+    defer file.close(std.testing.io);
 
     var buf: [4096]u8 = undefined;
-    var file_writer = file.writer(&buf);
+    var file_writer = file.writer(std.testing.io, &buf);
     const writer = &file_writer.interface;
 
     try db.generateMarkdownForSymbol(allocator, "Vector2", writer);
@@ -887,11 +887,11 @@ test "generateMarkdownForSymbol for method with signature" {
     try db.symbols.put(allocator, "Node.add_child", method_entry);
 
     // Write snapshot
-    var file = try std.fs.cwd().createFile("snapshots/method_with_signature.md", .{});
-    defer file.close();
+    var file = try Io.Dir.cwd().createFile(std.testing.io, "snapshots/method_with_signature.md", .{});
+    defer file.close(std.testing.io);
 
     var buf: [4096]u8 = undefined;
-    var file_writer = file.writer(&buf);
+    var file_writer = file.writer(std.testing.io, &buf);
     const writer = &file_writer.interface;
 
     try db.generateMarkdownForSymbol(allocator, "Node.add_child", writer);
@@ -918,11 +918,11 @@ test "generateMarkdownForSymbol for global function with signature" {
     try db.symbols.put(allocator, "sin", function_entry);
 
     // Write snapshot
-    var file = try std.fs.cwd().createFile("snapshots/global_function_with_signature.md", .{});
-    defer file.close();
+    var file = try Io.Dir.cwd().createFile(std.testing.io, "snapshots/global_function_with_signature.md", .{});
+    defer file.close(std.testing.io);
 
     var buf: [4096]u8 = undefined;
-    var file_writer = file.writer(&buf);
+    var file_writer = file.writer(std.testing.io, &buf);
     const writer = &file_writer.interface;
 
     try db.generateMarkdownForSymbol(allocator, "sin", writer);
@@ -984,11 +984,11 @@ test "generateMarkdownForSymbol for class with members" {
     try db.symbols.put(allocator, "Node2D.NOTIFICATION_READY", constant_entry);
 
     // Write snapshot
-    var file = try std.fs.cwd().createFile("snapshots/class_with_members.md", .{});
-    defer file.close();
+    var file = try Io.Dir.cwd().createFile(std.testing.io, "snapshots/class_with_members.md", .{});
+    defer file.close(std.testing.io);
 
     var buf: [4096]u8 = undefined;
-    var file_writer = file.writer(&buf);
+    var file_writer = file.writer(std.testing.io, &buf);
     const writer = &file_writer.interface;
 
     try db.generateMarkdownForSymbol(allocator, "Node2D", writer);
@@ -1019,11 +1019,11 @@ test "generateMarkdownForSymbol for class with tutorials" {
     try db.symbols.put(allocator, "Sprite2D", entry);
 
     // Write snapshot
-    var file = try std.fs.cwd().createFile("snapshots/class_with_tutorials.md", .{});
-    defer file.close();
+    var file = try Io.Dir.cwd().createFile(std.testing.io, "snapshots/class_with_tutorials.md", .{});
+    defer file.close(std.testing.io);
 
     var buf: [4096]u8 = undefined;
-    var file_writer = file.writer(&buf);
+    var file_writer = file.writer(std.testing.io, &buf);
     const writer = &file_writer.interface;
 
     try db.generateMarkdownForSymbol(allocator, "Sprite2D", writer);
@@ -1094,12 +1094,12 @@ test "loadFromXmlDir parses XML files into symbol table" {
         \\</class>
     ;
 
-    try tmp_dir.dir.writeFile(.{ .sub_path = "Sprite2D.xml", .data = sprite2d_xml });
+    try tmp_dir.dir.writeFile(std.testing.io, .{ .sub_path = "Sprite2D.xml", .data = sprite2d_xml });
 
-    const tmp_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(tmp_path);
 
-    const db = try DocDatabase.loadFromXmlDir(arena.allocator(), std.testing.allocator, tmp_path);
+    const db = try DocDatabase.loadFromXmlDir(arena.allocator(), std.testing.allocator, std.testing.io, tmp_path);
 
     // Verify class entry
     const class_entry = db.symbols.get("Sprite2D").?;
@@ -1141,12 +1141,12 @@ test "loadFromXmlDir groups constants with enum attribute as enum_value entries"
         \\</class>
     ;
 
-    try tmp_dir.dir.writeFile(.{ .sub_path = "Node.xml", .data = node_xml });
+    try tmp_dir.dir.writeFile(std.testing.io, .{ .sub_path = "Node.xml", .data = node_xml });
 
-    const tmp_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(tmp_path);
 
-    const db = try DocDatabase.loadFromXmlDir(arena.allocator(), std.testing.allocator, tmp_path);
+    const db = try DocDatabase.loadFromXmlDir(arena.allocator(), std.testing.allocator, std.testing.io, tmp_path);
 
     // Regular constant
     const notif_entry = db.symbols.get("Node.NOTIFICATION_READY").?;
@@ -1182,12 +1182,12 @@ test "loadFromXmlDir registers GlobalScope functions as top-level entries" {
         \\</class>
     ;
 
-    try tmp_dir.dir.writeFile(.{ .sub_path = "@GlobalScope.xml", .data = global_scope_xml });
+    try tmp_dir.dir.writeFile(std.testing.io, .{ .sub_path = "@GlobalScope.xml", .data = global_scope_xml });
 
-    const tmp_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(tmp_path);
 
-    const db = try DocDatabase.loadFromXmlDir(arena.allocator(), std.testing.allocator, tmp_path);
+    const db = try DocDatabase.loadFromXmlDir(arena.allocator(), std.testing.allocator, std.testing.io, tmp_path);
 
     // Verify dotted key exists
     const dotted_entry = db.symbols.get("@GlobalScope.abs").?;
@@ -1203,7 +1203,7 @@ test "loadFromXmlDir converts BBCode descriptions to Markdown" {
 
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
-    const tmp_path = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", allocator);
     defer allocator.free(tmp_path);
 
     const xml_content =
@@ -1213,11 +1213,11 @@ test "loadFromXmlDir converts BBCode descriptions to Markdown" {
         \\    <description>Uses [code]code[/code] and [i]italic[/i].</description>
         \\</class>
     ;
-    try tmp_dir.dir.writeFile(.{ .sub_path = "TestBBCode.xml", .data = xml_content });
+    try tmp_dir.dir.writeFile(std.testing.io, .{ .sub_path = "TestBBCode.xml", .data = xml_content });
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
-    const db = try DocDatabase.loadFromXmlDir(arena.allocator(), allocator, tmp_path);
+    const db = try DocDatabase.loadFromXmlDir(arena.allocator(), allocator, std.testing.io, tmp_path);
     const entry = db.symbols.get("TestBBCode").?;
 
     // BBCode should be converted to Markdown
@@ -1231,7 +1231,7 @@ test "XML dir to markdown roundtrip" {
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const tmp_path = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", allocator);
     defer allocator.free(tmp_path);
 
     // Write a realistic XML doc
@@ -1275,25 +1275,25 @@ test "XML dir to markdown roundtrip" {
     // Write XML to a subdir
     const xml_dir = try std.fmt.allocPrint(allocator, "{s}/xml", .{tmp_path});
     defer allocator.free(xml_dir);
-    try std.fs.makeDirAbsolute(xml_dir);
+    try Io.Dir.cwd().createDirPath(std.testing.io, xml_dir);
     const xml_path = try std.fmt.allocPrint(allocator, "{s}/TestClass.xml", .{xml_dir});
     defer allocator.free(xml_path);
-    try std.fs.cwd().writeFile(.{ .sub_path = xml_path, .data = xml_content });
+    try Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = xml_path, .data = xml_content });
 
     // Load from XML
     var arena_alloc = std.heap.ArenaAllocator.init(allocator);
     defer arena_alloc.deinit();
-    const db = try DocDatabase.loadFromXmlDir(arena_alloc.allocator(), allocator, xml_dir);
+    const db = try DocDatabase.loadFromXmlDir(arena_alloc.allocator(), allocator, std.testing.io, xml_dir);
 
     // Generate markdown cache
     const cache_dir = try std.fmt.allocPrint(allocator, "{s}/cache", .{tmp_path});
     defer allocator.free(cache_dir);
-    try cache.generateMarkdownCache(allocator, db, cache_dir);
+    try cache.generateMarkdownCache(allocator, std.testing.io, db, cache_dir);
 
     // Read back the class markdown
     var output: std.Io.Writer.Allocating = .init(allocator);
     defer output.deinit();
-    try cache.readSymbolMarkdown(allocator, "TestClass", cache_dir, &output.writer);
+    try cache.readSymbolMarkdown(allocator, std.testing.io, "TestClass", cache_dir, &output.writer);
     const written = output.written();
 
     // Verify key content
@@ -1315,15 +1315,15 @@ test "loadFromXmlDir skips malformed XML files" {
 
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
-    const tmp_path = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", allocator);
     defer allocator.free(tmp_path);
 
-    try tmp_dir.dir.writeFile(.{ .sub_path = "Bad.xml", .data = "<?xml version=\"1.0\" ?>\n<class name=\"Bad\"><broken" });
+    try tmp_dir.dir.writeFile(std.testing.io, .{ .sub_path = "Bad.xml", .data = "<?xml version=\"1.0\" ?>\n<class name=\"Bad\"><broken" });
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
 
-    const db = try DocDatabase.loadFromXmlDir(arena.allocator(), allocator, tmp_path);
+    const db = try DocDatabase.loadFromXmlDir(arena.allocator(), allocator, std.testing.io, tmp_path);
     // Bad file should be skipped, resulting in empty database
     try std.testing.expectEqual(@as(usize, 0), db.symbols.count());
 }
@@ -1333,10 +1333,10 @@ test "lookupSymbolExact returns SymbolNotFound for missing symbol in XML databas
 
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
-    const tmp_path = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", allocator);
     defer allocator.free(tmp_path);
 
-    try tmp_dir.dir.writeFile(.{ .sub_path = "Node.xml", .data =
+    try tmp_dir.dir.writeFile(std.testing.io, .{ .sub_path = "Node.xml", .data =
         \\<?xml version="1.0" encoding="UTF-8" ?>
         \\<class name="Node" inherits="Object">
         \\    <brief_description>Base class.</brief_description>
@@ -1347,7 +1347,7 @@ test "lookupSymbolExact returns SymbolNotFound for missing symbol in XML databas
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
 
-    const db = try DocDatabase.loadFromXmlDir(arena.allocator(), allocator, tmp_path);
+    const db = try DocDatabase.loadFromXmlDir(arena.allocator(), allocator, std.testing.io, tmp_path);
     const result = db.lookupSymbolExact("NonExistent");
     try std.testing.expectError(DocDatabase.Error.SymbolNotFound, result);
 }
@@ -1355,11 +1355,11 @@ test "lookupSymbolExact returns SymbolNotFound for missing symbol in XML databas
 // --- Godot BBCode conversion snapshot tests ---
 
 fn writeSnapshot(content: []const u8, path: []const u8) !void {
-    var file = try std.fs.cwd().createFile(path, .{});
-    defer file.close();
+    var file = try Io.Dir.cwd().createFile(std.testing.io, path, .{});
+    defer file.close(std.testing.io);
 
     var buf: [4096]u8 = undefined;
-    var file_writer = file.writer(&buf);
+    var file_writer = file.writer(std.testing.io, &buf);
     try file_writer.interface.writeAll(content);
     try file_writer.interface.flush();
 }
@@ -1441,7 +1441,7 @@ test "snapshot: XML roundtrip with Godot tags" {
 
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
-    const tmp_path = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", allocator);
     defer allocator.free(tmp_path);
 
     const xml_content =
@@ -1458,11 +1458,11 @@ test "snapshot: XML roundtrip with Godot tags" {
         \\    </methods>
         \\</class>
     ;
-    try tmp_dir.dir.writeFile(.{ .sub_path = "TestGodotTags.xml", .data = xml_content });
+    try tmp_dir.dir.writeFile(std.testing.io, .{ .sub_path = "TestGodotTags.xml", .data = xml_content });
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
-    const db = try DocDatabase.loadFromXmlDir(arena.allocator(), allocator, tmp_path);
+    const db = try DocDatabase.loadFromXmlDir(arena.allocator(), allocator, std.testing.io, tmp_path);
 
     // Write class index snapshot
     var allocating: Writer.Allocating = .init(allocator);
@@ -1480,6 +1480,7 @@ test "snapshot: XML roundtrip with Godot tags" {
 const std = @import("std");
 const ArenaAllocator = std.heap.ArenaAllocator;
 const Allocator = std.mem.Allocator;
+const Io = std.Io;
 const StringArrayHashMap = std.StringArrayHashMapUnmanaged;
 const ArrayList = std.ArrayListUnmanaged;
 const Writer = std.Io.Writer;

@@ -94,7 +94,7 @@ pub fn parseClassDoc(allocator: Allocator, xml_content: []const u8) ParseError!C
                     if (url.ptr != url_raw.ptr) {
                         allocator.free(url_raw);
                     }
-                    try tutorials.append(allocator,.{ .title = title, .url = url });
+                    try tutorials.append(allocator, .{ .title = title, .url = url });
                 } else if (std.mem.eql(u8, name, "method")) {
                     const method_doc = try parseMethodElement(allocator, reader);
                     try methods.append(allocator, method_doc);

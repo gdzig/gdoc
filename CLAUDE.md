@@ -16,8 +16,8 @@ Key behavior:
 ## Build System
 
 ### Dependencies
-- **Zig**: 0.15.1 (managed via mise)
-- **ZLS**: 0.15.0 (Zig Language Server, managed via mise)
+- **Zig**: 0.16.0 (managed via mise)
+- **ZLS**: 0.16.0 (Zig Language Server, managed via mise)
 - **bbcodez**: BBCode parser/formatter library (fetched from git)
 
 ### Common Build Commands
@@ -103,8 +103,8 @@ bd update <issue-id> --status in_progress
 ## Development Environment
 
 Uses `mise` for version management (see `mise.toml`):
-- Zig 0.15.1
-- ZLS 0.15.0  
+- Zig 0.16.0
+- ZLS 0.16.0  
 - beads (bd CLI)
 
 Install tools: `mise install`
