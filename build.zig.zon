@@ -2,27 +2,27 @@
     .name = .gdoc,
     .version = "0.1.2",
     .fingerprint = 0xfeb534d08010a2a9,
-    .minimum_zig_version = "0.15.2",
+    .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .bbcodez = .{
-            .url = "git+https://github.com/gdzig/bbcodez.git#5a4f5bd131552e7394ef26b01883370eb422eca4",
-            .hash = "bbcodez-0.0.1-dev-YlrOBo-iAQBWdgFSZ5eINgMNAZlmrHLQ35zKSZEEqgS2",
+            .url = "git+https://github.com/gdzig/bbcodez.git#f1e5010323c48d42f3dc267d4d933584f71d9734",
+            .hash = "bbcodez-0.0.1-dev-YlrOBrGpAQBzoPrFNNohWdIP_ZhbhVuEndux7FfWFNlC",
         },
         .known_folders = .{
-            .url = "https://github.com/ziglibs/known-folders/archive/83d39161eac2ed6f37ad3cb4d9dd518696ce90bb.tar.gz",
-            .hash = "known_folders-0.0.0-Fy-PJv3LAAABBRVoZWVrKZdyLoUfl5VRY5fqRRRdnF5L",
+            .url = "git+https://github.com/ziglibs/known-folders.git#6da0d0c41b78b9ed2d34fa364fcb81b5ebece6c4",
+            .hash = "known_folders-0.0.0-Fy-PJiDLAAB98m3uYUzatrTb2mO2fpvwx2zpSroEtfbO",
         },
         .zli = .{
-            .url = "https://github.com/xcaeser/zli/archive/v4.3.0.tar.gz",
-            .hash = "zli-4.3.0-LeUjpmbfAACPnRj2nzbzaLMNfTkq-LEWSC9EfOcnFxjl",
+            .url = "https://github.com/xcaeser/zli/archive/refs/tags/v5.1.3.tar.gz",
+            .hash = "zli-5.1.3-LeUjpvkHAQCYj3r-wgQ2r1Gdkk-S61EFABfsXHP5Q4CH",
         },
         .zigdown = .{
-            .url = "https://github.com/JacobCrabill/zigdown/archive/refs/tags/v1.2.0.tar.gz",
-            .hash = "zigdown-1.2.0-M06JT7-lFQCrQRNGBipFjSt-qAvFSLgy8-f-D4VFAeOi",
+            .url = "https://github.com/JacobCrabill/zigdown/archive/refs/tags/v1.3.1.tar.gz",
+            .hash = "zigdown-1.3.1-M06JTwiRFgD_aejFBcH2fKfVPRj6O6bME_r-byJZf4Qi",
         },
         .xml = .{
-            .url = "git+https://github.com/ianprime0509/zig-xml#8874de5b846f4e3e806a062cd11a01b2bb90fc7a",
-            .hash = "xml-0.2.0-ZTbP3wE6AgCsnyZut_plzxi6WB2tzzh3kFRBOp3AL7n9",
+            .url = "git+https://github.com/ianprime0509/zig-xml.git#d2532fda5607d5545ecd16df98fbf979aa78c05f",
+            .hash = "xml-0.2.0-ZTbP3yI6AgCDqW2awXya1aSKFJzPrXTRGYWGmoMj1mDG",
         },
     },
     .paths = .{

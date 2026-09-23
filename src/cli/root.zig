@@ -1,10 +1,13 @@
 const version = SemanticVersion.parse(build_options.version) catch @compileError("Invalid version");
 
-pub fn build(allocator: Allocator, writer: *Writer, reader: *Reader) !*Command {
+pub fn build(allocator: Allocator, io: Io, writer: *Writer, reader: *Reader) !*Command {
     const root = try Command.init(
-        writer,
-        reader,
-        allocator,
+        .{
+            .allocator = allocator,
+            .io = io,
+            .writer = writer,
+            .reader = reader,
+        },
         .{
             .name = "gdoc",
             .description = "Godot documentation CLI",
@@ -51,13 +54,13 @@ fn runLookup(ctx: CommandContext) !void {
     const config: *const gdoc.Config = ctx.getContextData(gdoc.Config);
 
     if (clear_cache) {
-        try gdoc.cache.clearCache(config);
+        try gdoc.cache.clearCache(ctx.io, config);
         try ctx.writer.writeAll("Cache cleared.\n");
     }
 
     const symbol = ctx.getArg("symbol") orelse return;
 
-    gdoc.formatAndDisplay(ctx.allocator, symbol, ctx.writer, output_format, config) catch |err| switch (err) {
+    gdoc.formatAndDisplay(ctx.allocator, ctx.io, symbol, ctx.writer, output_format, config) catch |err| switch (err) {
         DocDatabaseError.SymbolNotFound => try ctx.writer.print("Symbol '{s}' not found.\n", .{symbol}),
         else => return err,
     };
@@ -71,6 +74,8 @@ const OutputFormat = gdoc.OutputFormat;
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const Io = std.Io;
+
 const Writer = std.Io.Writer;
 const Reader = std.Io.Reader;
 const SemanticVersion = std.SemanticVersion;

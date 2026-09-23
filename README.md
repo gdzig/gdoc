@@ -40,12 +40,12 @@ scoop install gdoc
 
 ### Build from Source
 
-Requires [Zig 0.15.2](https://ziglang.org/download/):
+Requires [Zig 0.16.0](https://ziglang.org/download/):
 
 ```bash
 git clone https://github.com/gdzig/gdoc.git
 cd gdoc
-zig build install --release=safe --prefix ~/.local
+zig build install -Doptimize=ReleaseSafe --prefix ~/.local
 ```
 
 **Requirements**: You'll need `godot` available in your PATH for gdoc to work.

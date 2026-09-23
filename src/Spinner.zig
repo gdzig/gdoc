@@ -1,11 +1,10 @@
-const std = @import("std");
-
 const Spinner = @This();
 
 const frames = [_][]const u8{ "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" };
 const delay_ns = 80 * std.time.ns_per_ms;
 
 message: []const u8,
+io: Io,
 thread: ?std.Thread = null,
 stop: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 
@@ -21,22 +20,26 @@ pub fn finish(self: *Spinner) void {
     self.thread.?.join();
     self.thread = null;
 
-    const stderr = std.fs.File.stderr();
+    const stderr = File.stderr();
     var buf: [256]u8 = undefined;
-    var w = stderr.writer(&buf);
+    var w = stderr.writer(self.io, &buf);
     w.interface.writeAll("\r\x1b[2K") catch {};
     w.interface.flush() catch {};
 }
 
 fn run(self: *Spinner) void {
-    const stderr = std.fs.File.stderr();
+    const stderr = File.stderr();
     var buf: [256]u8 = undefined;
-    var w = stderr.writer(&buf);
+    var w = stderr.writer(self.io, &buf);
     var i: usize = 0;
     while (!self.stop.load(.acquire)) {
         w.interface.print("\r{s} {s}", .{ frames[i], self.message }) catch return;
         w.interface.flush() catch return;
         i = (i + 1) % frames.len;
-        std.Thread.sleep(delay_ns);
+        Io.sleep(self.io, .fromNanoseconds(delay_ns), .awake) catch {};
     }
 }
+
+const std = @import("std");
+const Io = std.Io;
+const File = Io.File;
