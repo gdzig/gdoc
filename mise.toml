@@ -3,6 +3,7 @@ zig = "0.15.2"
 zls = "0.15.0"
 godot = "latest"
 git-cliff = "latest"
+"github:gdzig/gdzig-zlint" = "0.6.1"
 usage = "latest"
 "forgejo:tensorush/zq" = { version = "0.8.0", bin = "zq" }
 vhs = "latest"
@@ -10,6 +11,10 @@ vhs = "latest"
 [tasks.test]
 alias = ["t"]
 run = "zig build test"
+
+[tasks.lint]
+description = "Run gdzig-zlint with the repository rules"
+run = "gdzig-zlint ."
 
 [tasks.demo]
 dir = "demo"

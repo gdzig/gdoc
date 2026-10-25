@@ -1,0 +1,48 @@
+{
+  "$schema": "https://raw.githubusercontent.com/DonIsaac/zlint/refs/tags/v0.10.0/zlint.schema.json",
+  "ignore": [
+    "vendor/**",
+    "zig-out/**",
+    "zig-pkg/**",
+    ".zig-cache/**",
+    "**/src/linter/rules/snapshots/**"
+  ],
+  "rules": {
+    "gdzig-imports-sorted": [
+      "warn",
+      {
+        "std_modules": [
+          "std",
+          "builtin"
+        ]
+      }
+    ],
+    "gdzig-imports-placement": [
+      "warn",
+      {
+        "position": "bottom"
+      }
+    ],
+    "gdzig-file-name-case": "warn",
+    "gdzig-import-alias-case": "warn",
+    "gdzig-tests-last": "warn",
+    "gdzig-trailing-comma": "warn",
+    "gdzig-public-docs": "warn",
+    "gdzig-inferred-initializers": "warn",
+    "gdzig-testing-usage": "warn",
+    "homeless-try": "error",
+    "no-unresolved": "off",
+    "unused-decls": "off",
+    "unsafe-undefined": "off",
+    "avoid-as": "off",
+    "no-print": "off",
+    "suppressed-errors": "off",
+    "line-length": [
+      "warn",
+      {
+        "max_length": 120
+      }
+    ],
+    "empty-file": "off"
+  }
+}

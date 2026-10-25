@@ -109,6 +109,10 @@ fn renderMarkdownWithZigdown(allocator: Allocator, markdown: []const u8, writer:
     try renderer.renderBlock(parser.document);
 }
 
+comptime {
+    std.testing.refAllDecls(@This());
+}
+
 test "OutputFormat enum has markdown and terminal values" {
     // Test that OutputFormat enum exists with expected values
     const format_markdown: OutputFormat = .markdown;
@@ -170,10 +174,6 @@ test "markdownForSymbol reads from markdown cache when available" {
     cache.clearCache(&Config.testing) catch {};
 }
 
-comptime {
-    std.testing.refAllDecls(@This());
-}
-
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
@@ -181,14 +181,20 @@ const File = std.fs.File;
 const Writer = std.Io.Writer;
 const AllocatingWriter = Writer.Allocating;
 
-pub const DocDatabase = @import("DocDatabase.zig");
-pub const XmlDocParser = @import("XmlDocParser.zig");
-pub const cache = @import("cache.zig");
-pub const Config = @import("Config.zig");
-pub const source_fetch = @import("source_fetch.zig");
-const Spinner = @import("Spinner.zig");
-
 const zigdown = @import("zigdown");
 const ConsoleRenderer = zigdown.ConsoleRenderer;
 const Parser = zigdown.Parser;
 const TermSize = zigdown.gfx.TermSize;
+
+pub const cache = @import("cache.zig");
+
+pub const Config = @import("Config.zig");
+
+pub const DocDatabase = @import("DocDatabase.zig");
+
+pub const source_fetch = @import("source_fetch.zig");
+
+const Spinner = @import("Spinner.zig");
+
+const xml_doc_parser = @import("xml_doc_parser.zig");
+pub const XmlDocParser = xml_doc_parser;

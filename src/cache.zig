@@ -132,7 +132,6 @@ test "testing config has valid cache directory" {
     try std.testing.expect(std.mem.indexOf(u8, Config.testing.cache_dir, "gdoc") != null);
 }
 
-
 test "ensureCacheDir creates directory if it doesn't exist" {
     const allocator = std.testing.allocator;
 
@@ -180,7 +179,6 @@ test "ensureCacheDir succeeds when directory already exists" {
     // Cleanup
     try std.fs.deleteTreeAbsolute(test_cache);
 }
-
 
 test "clearCache deletes cache directory" {
     const allocator = std.testing.allocator;
@@ -706,5 +704,7 @@ const Allocator = std.mem.Allocator;
 const Writer = std.Io.Writer;
 
 const Config = @import("Config.zig");
+
 const DocDatabase = @import("DocDatabase.zig");
+
 const source_fetch = @import("source_fetch.zig");

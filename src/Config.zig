@@ -1,6 +1,3 @@
-const std = @import("std");
-const known_folders = @import("known-folders");
-
 const Config = @This();
 
 cache_dir: []const u8,
@@ -44,3 +41,7 @@ test "init" {
 test "testing config" {
     try std.testing.expectEqualStrings("/tmp/gdoc-test-cache", Config.testing.cache_dir);
 }
+
+const std = @import("std");
+
+const known_folders = @import("known-folders");

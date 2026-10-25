@@ -24,10 +24,10 @@ pub fn main() !void {
     var stdin_reader = File.stdin().readerStreaming(&buf);
     const stdin = &stdin_reader.interface;
 
-    const root = try cli.build(allocator, stdout, stdin);
-    defer root.deinit();
+    const command = try root.build(allocator, stdout, stdin);
+    defer command.deinit();
 
-    try root.execute(.{ .data = @ptrCast(&config) });
+    try command.execute(.{ .data = @ptrCast(&config) });
     try stdout.flush();
 }
 
@@ -35,5 +35,6 @@ const std = @import("std");
 const DebugAllocator = std.heap.DebugAllocator;
 const File = std.fs.File;
 
-const cli = @import("cli/root.zig");
 const gdoc = @import("gdoc");
+
+const root = @import("cli/root.zig");

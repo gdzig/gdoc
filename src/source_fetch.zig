@@ -48,7 +48,7 @@ pub fn parseGodotVersion(version_str: []const u8) ?VersionInfo {
     else
         null;
 
-    return VersionInfo{
+    return .{
         .major = major,
         .minor = minor,
         .patch = patch,
@@ -85,59 +85,6 @@ pub fn getGodotVersionFromPath(allocator: Allocator, godot_path: []const u8) ?Ve
 /// Convenience wrapper that calls `getGodotVersionFromPath` with "godot" from PATH.
 pub fn getGodotVersion(allocator: Allocator) ?VersionInfo {
     return getGodotVersionFromPath(allocator, "godot");
-}
-
-test "parseGodotVersion: standard version with hash" {
-    const result = parseGodotVersion("4.6.1.stable.official.14d19694e");
-    try std.testing.expect(result != null);
-    const v = result.?;
-    try std.testing.expectEqualStrings("4", v.major);
-    try std.testing.expectEqualStrings("6", v.minor);
-    try std.testing.expectEqualStrings("1", v.patch);
-    try std.testing.expectEqualStrings("14d19694e", v.hash.?);
-}
-
-test "parseGodotVersion: custom build without hash" {
-    const result = parseGodotVersion("4.6.1.stable.custom_build");
-    try std.testing.expect(result != null);
-    const v = result.?;
-    try std.testing.expectEqualStrings("4", v.major);
-    try std.testing.expectEqualStrings("6", v.minor);
-    try std.testing.expectEqualStrings("1", v.patch);
-    try std.testing.expect(v.hash == null);
-}
-
-test "parseGodotVersion: dev build with hash" {
-    const result = parseGodotVersion("4.7.0.dev.official.abc123def");
-    try std.testing.expect(result != null);
-    const v = result.?;
-    try std.testing.expectEqualStrings("4", v.major);
-    try std.testing.expectEqualStrings("7", v.minor);
-    try std.testing.expectEqualStrings("0", v.patch);
-    try std.testing.expectEqualStrings("abc123def", v.hash.?);
-}
-
-test "parseGodotVersion: empty string returns null" {
-    const result = parseGodotVersion("");
-    try std.testing.expect(result == null);
-}
-
-test "parseGodotVersion: malformed string returns null" {
-    const result = parseGodotVersion("not-a-version");
-    try std.testing.expect(result == null);
-}
-
-test "VersionInfo.formatVersion produces correct output" {
-    const v = VersionInfo{
-        .major = "4",
-        .minor = "6",
-        .patch = "1",
-        .hash = "14d19694e",
-    };
-    var buf: [32]u8 = undefined;
-    const formatted = v.formatVersion(&buf);
-    try std.testing.expect(formatted != null);
-    try std.testing.expectEqualStrings("4.6.1", formatted.?);
 }
 
 /// Builds a tarball URL for a specific Godot version tag.
@@ -367,6 +314,60 @@ test "readCompleteMarker returns null for non-existent marker" {
     try std.testing.expect(result == null);
 }
 
-const Allocator = std.mem.Allocator;
+test "parseGodotVersion: standard version with hash" {
+    const result = parseGodotVersion("4.6.1.stable.official.14d19694e");
+    try std.testing.expect(result != null);
+    const v = result.?;
+    try std.testing.expectEqualStrings("4", v.major);
+    try std.testing.expectEqualStrings("6", v.minor);
+    try std.testing.expectEqualStrings("1", v.patch);
+    try std.testing.expectEqualStrings("14d19694e", v.hash.?);
+}
+
+test "parseGodotVersion: custom build without hash" {
+    const result = parseGodotVersion("4.6.1.stable.custom_build");
+    try std.testing.expect(result != null);
+    const v = result.?;
+    try std.testing.expectEqualStrings("4", v.major);
+    try std.testing.expectEqualStrings("6", v.minor);
+    try std.testing.expectEqualStrings("1", v.patch);
+    try std.testing.expect(v.hash == null);
+}
+
+test "parseGodotVersion: dev build with hash" {
+    const result = parseGodotVersion("4.7.0.dev.official.abc123def");
+    try std.testing.expect(result != null);
+    const v = result.?;
+    try std.testing.expectEqualStrings("4", v.major);
+    try std.testing.expectEqualStrings("7", v.minor);
+    try std.testing.expectEqualStrings("0", v.patch);
+    try std.testing.expectEqualStrings("abc123def", v.hash.?);
+}
+
+test "parseGodotVersion: empty string returns null" {
+    const result = parseGodotVersion("");
+    try std.testing.expect(result == null);
+}
+
+test "parseGodotVersion: malformed string returns null" {
+    const result = parseGodotVersion("not-a-version");
+    try std.testing.expect(result == null);
+}
+
+test "VersionInfo.formatVersion produces correct output" {
+    const v = VersionInfo{
+        .major = "4",
+        .minor = "6",
+        .patch = "1",
+        .hash = "14d19694e",
+    };
+    var buf: [32]u8 = undefined;
+    const formatted = v.formatVersion(&buf);
+    try std.testing.expect(formatted != null);
+    try std.testing.expectEqualStrings("4.6.1", formatted.?);
+}
+
 const std = @import("std");
+const Allocator = std.mem.Allocator;
+
 const cache = @import("cache.zig");

@@ -1,5 +1,3 @@
-const std = @import("std");
-
 const Spinner = @This();
 
 const frames = [_][]const u8{ "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" };
@@ -40,3 +38,5 @@ fn run(self: *Spinner) void {
         std.Thread.sleep(delay_ns);
     }
 }
+
+const std = @import("std");
