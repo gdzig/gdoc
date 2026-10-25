@@ -1,7 +1,3 @@
-const std = @import("std");
-const Allocator = std.mem.Allocator;
-const xml = @import("xml");
-
 const docs_url = "https://docs.godotengine.org/en/stable";
 
 pub const Tutorial = struct {
@@ -94,7 +90,7 @@ pub fn parseClassDoc(allocator: Allocator, xml_content: []const u8) ParseError!C
                     if (url.ptr != url_raw.ptr) {
                         allocator.free(url_raw);
                     }
-                    try tutorials.append(allocator,.{ .title = title, .url = url });
+                    try tutorials.append(allocator, .{ .title = title, .url = url });
                 } else if (std.mem.eql(u8, name, "method")) {
                     const method_doc = try parseMethodElement(allocator, reader);
                     try methods.append(allocator, method_doc);
@@ -337,6 +333,67 @@ const test_xml =
     \\</class>
 ;
 
+const test_xml_with_constructors_and_operators =
+    \\<?xml version="1.0" encoding="UTF-8" ?>
+    \\<class name="Vector2">
+    \\    <brief_description>A 2D vector.</brief_description>
+    \\    <description>2D vector type.</description>
+    \\    <constructors>
+    \\        <constructor name="Vector2">
+    \\            <return type="Vector2" />
+    \\            <description>Constructs a default Vector2.</description>
+    \\        </constructor>
+    \\        <constructor name="Vector2">
+    \\            <return type="Vector2" />
+    \\            <param index="0" name="x" type="float" />
+    \\            <param index="1" name="y" type="float" />
+    \\            <description>Constructs from x and y.</description>
+    \\        </constructor>
+    \\    </constructors>
+    \\    <operators>
+    \\        <operator name="operator +">
+    \\            <return type="Vector2" />
+    \\            <param index="0" name="right" type="Vector2" />
+    \\            <description>Adds two vectors.</description>
+    \\        </operator>
+    \\    </operators>
+    \\</class>
+;
+
+const test_xml_with_enums =
+    \\<?xml version="1.0" encoding="UTF-8" ?>
+    \\<class name="Node">
+    \\    <brief_description>Base class.</brief_description>
+    \\    <description>Base node.</description>
+    \\    <constants>
+    \\        <constant name="NOTIFICATION_READY" value="13">Ready notification.</constant>
+    \\        <constant name="PROCESS_MODE_INHERIT" value="0" enum="ProcessMode">Inherits process mode.</constant>
+    \\        <constant name="PROCESS_MODE_ALWAYS" value="3" enum="ProcessMode">Always process.</constant>
+    \\    </constants>
+    \\</class>
+;
+
+const test_xml_with_params =
+    \\<?xml version="1.0" encoding="UTF-8" ?>
+    \\<class name="Node2D" inherits="CanvasItem">
+    \\    <brief_description>A 2D game object.</brief_description>
+    \\    <description>Node2D is the base class for 2D.</description>
+    \\    <methods>
+    \\        <method name="get_angle_to" qualifiers="const">
+    \\            <return type="float" />
+    \\            <param index="0" name="point" type="Vector2" />
+    \\            <description>Returns the angle between the node and the point.</description>
+    \\        </method>
+    \\        <method name="move_local_x">
+    \\            <return type="void" />
+    \\            <param index="0" name="delta" type="float" />
+    \\            <param index="1" name="scaled" type="bool" default="false" />
+    \\            <description>Applies a local translation on the X axis.</description>
+    \\        </method>
+    \\    </methods>
+    \\</class>
+;
+
 test "parses class name and inherits" {
     const allocator = std.testing.allocator;
     const doc = try parseClassDoc(allocator, test_xml);
@@ -437,33 +494,6 @@ test "parses constants with descriptions" {
     try std.testing.expectEqualStrings("Maximum allowed value.", consts[0].description.?);
 }
 
-const test_xml_with_constructors_and_operators =
-    \\<?xml version="1.0" encoding="UTF-8" ?>
-    \\<class name="Vector2">
-    \\    <brief_description>A 2D vector.</brief_description>
-    \\    <description>2D vector type.</description>
-    \\    <constructors>
-    \\        <constructor name="Vector2">
-    \\            <return type="Vector2" />
-    \\            <description>Constructs a default Vector2.</description>
-    \\        </constructor>
-    \\        <constructor name="Vector2">
-    \\            <return type="Vector2" />
-    \\            <param index="0" name="x" type="float" />
-    \\            <param index="1" name="y" type="float" />
-    \\            <description>Constructs from x and y.</description>
-    \\        </constructor>
-    \\    </constructors>
-    \\    <operators>
-    \\        <operator name="operator +">
-    \\            <return type="Vector2" />
-    \\            <param index="0" name="right" type="Vector2" />
-    \\            <description>Adds two vectors.</description>
-    \\        </operator>
-    \\    </operators>
-    \\</class>
-;
-
 test "parses constructors" {
     const allocator = std.testing.allocator;
     const doc = try parseClassDoc(allocator, test_xml_with_constructors_and_operators);
@@ -488,19 +518,6 @@ test "parses operators" {
     try std.testing.expectEqual(1, ops[0].params.?.len);
 }
 
-const test_xml_with_enums =
-    \\<?xml version="1.0" encoding="UTF-8" ?>
-    \\<class name="Node">
-    \\    <brief_description>Base class.</brief_description>
-    \\    <description>Base node.</description>
-    \\    <constants>
-    \\        <constant name="NOTIFICATION_READY" value="13">Ready notification.</constant>
-    \\        <constant name="PROCESS_MODE_INHERIT" value="0" enum="ProcessMode">Inherits process mode.</constant>
-    \\        <constant name="PROCESS_MODE_ALWAYS" value="3" enum="ProcessMode">Always process.</constant>
-    \\    </constants>
-    \\</class>
-;
-
 test "parses constant value and enum attribute" {
     const allocator = std.testing.allocator;
     const doc = try parseClassDoc(allocator, test_xml_with_enums);
@@ -517,27 +534,6 @@ test "parses constant value and enum attribute" {
     try std.testing.expectEqualStrings("0", consts[1].default_value.?);
     try std.testing.expectEqualStrings("ProcessMode", consts[1].qualifiers.?);
 }
-
-const test_xml_with_params =
-    \\<?xml version="1.0" encoding="UTF-8" ?>
-    \\<class name="Node2D" inherits="CanvasItem">
-    \\    <brief_description>A 2D game object.</brief_description>
-    \\    <description>Node2D is the base class for 2D.</description>
-    \\    <methods>
-    \\        <method name="get_angle_to" qualifiers="const">
-    \\            <return type="float" />
-    \\            <param index="0" name="point" type="Vector2" />
-    \\            <description>Returns the angle between the node and the point.</description>
-    \\        </method>
-    \\        <method name="move_local_x">
-    \\            <return type="void" />
-    \\            <param index="0" name="delta" type="float" />
-    \\            <param index="1" name="scaled" type="bool" default="false" />
-    \\            <description>Applies a local translation on the X axis.</description>
-    \\        </method>
-    \\    </methods>
-    \\</class>
-;
 
 test "parses method params and return type" {
     const allocator = std.testing.allocator;
@@ -568,3 +564,8 @@ test "freeClassDoc doesn't leak" {
     freeClassDoc(allocator, doc);
     // testing allocator will catch leaks
 }
+
+const std = @import("std");
+const Allocator = std.mem.Allocator;
+
+const xml = @import("xml");

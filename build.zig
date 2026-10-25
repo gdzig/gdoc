@@ -1,6 +1,3 @@
-const std = @import("std");
-const BuildZigZon = @import("build.zig.zon");
-
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -98,3 +95,7 @@ pub fn build(b: *std.Build) void {
 
     test_step.dependOn(&diff_check.step);
 }
+
+const std = @import("std");
+
+const BuildZigZon = @import("build.zig.zon");

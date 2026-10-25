@@ -65,18 +65,18 @@ fn runLookup(ctx: CommandContext) !void {
     try ctx.writer.flush();
 }
 
-const gdoc = @import("gdoc");
-const DocDatabaseError = gdoc.DocDatabase.Error;
-const OutputFormat = gdoc.OutputFormat;
-
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Writer = std.Io.Writer;
 const Reader = std.Io.Reader;
 const SemanticVersion = std.SemanticVersion;
 
+const build_options = @import("build_options");
+
+const gdoc = @import("gdoc");
+const DocDatabaseError = gdoc.DocDatabase.Error;
+const OutputFormat = gdoc.OutputFormat;
+
 const zli = @import("zli");
 const Command = zli.Command;
 const CommandContext = zli.CommandContext;
-
-const build_options = @import("build_options");

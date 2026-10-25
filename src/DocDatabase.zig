@@ -712,6 +712,16 @@ pub fn generateMarkdownForSymbol(self: DocDatabase, allocator: Allocator, symbol
     try self.generateMarkdownForEntry(allocator, self.symbols.get(symbol) orelse return error.SymbolNotFound, writer);
 }
 
+fn writeSnapshot(content: []const u8, path: []const u8) !void {
+    var file = try std.fs.cwd().createFile(path, .{});
+    defer file.close();
+
+    var buf: [4096]u8 = undefined;
+    var file_writer = file.writer(&buf);
+    try file_writer.interface.writeAll(content);
+    try file_writer.interface.flush();
+}
+
 // RED PHASE: Tests for DocDatabase.generateMarkdownForSymbol using snapshot testing
 test "generateMarkdownForSymbol for global function" {
     const allocator = std.testing.allocator;
@@ -1336,12 +1346,15 @@ test "lookupSymbolExact returns SymbolNotFound for missing symbol in XML databas
     const tmp_path = try tmp_dir.dir.realpathAlloc(allocator, ".");
     defer allocator.free(tmp_path);
 
-    try tmp_dir.dir.writeFile(.{ .sub_path = "Node.xml", .data =
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "Node.xml",
+        .data =
         \\<?xml version="1.0" encoding="UTF-8" ?>
         \\<class name="Node" inherits="Object">
         \\    <brief_description>Base class.</brief_description>
         \\    <description>Base node class.</description>
         \\</class>
+        ,
     });
 
     var arena = std.heap.ArenaAllocator.init(allocator);
@@ -1353,16 +1366,6 @@ test "lookupSymbolExact returns SymbolNotFound for missing symbol in XML databas
 }
 
 // --- Godot BBCode conversion snapshot tests ---
-
-fn writeSnapshot(content: []const u8, path: []const u8) !void {
-    var file = try std.fs.cwd().createFile(path, .{});
-    defer file.close();
-
-    var buf: [4096]u8 = undefined;
-    var file_writer = file.writer(&buf);
-    try file_writer.interface.writeAll(content);
-    try file_writer.interface.flush();
-}
 
 test "snapshot: cross-reference tags" {
     const allocator = std.testing.allocator;
@@ -1485,5 +1488,8 @@ const ArrayList = std.ArrayListUnmanaged;
 const Writer = std.Io.Writer;
 
 const bbcodez = @import("bbcodez");
+
 const cache = @import("cache.zig");
-const XmlDocParser = @import("XmlDocParser.zig");
+
+const xml_doc_parser = @import("xml_doc_parser.zig");
+const XmlDocParser = xml_doc_parser;
